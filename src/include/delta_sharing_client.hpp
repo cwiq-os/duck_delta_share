@@ -19,6 +19,7 @@ struct DeltaSharingProfile {
 
     static DeltaSharingProfile FromFile(const std::string &profile_path);
     static DeltaSharingProfile FromJson(const std::string &json_str);
+    static DeltaSharingProfile FromEnvironment();
 };
 
 // Delta Sharing API response structures

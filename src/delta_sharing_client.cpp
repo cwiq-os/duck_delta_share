@@ -44,6 +44,38 @@ DeltaSharingProfile DeltaSharingProfile::FromJson(const std::string &json_str) {
     return profile;
 }
 
+DeltaSharingProfile DeltaSharingProfile::FromEnvironment() {
+    DeltaSharingProfile profile;
+
+    // Get endpoint from environment
+    const char* endpoint_env = std::getenv("DELTA_SHARING_ENDPOINT");
+    if (!endpoint_env || strlen(endpoint_env) == 0) {
+        throw IOException("DELTA_SHARING_ENDPOINT environment variable is not set");
+    }
+    profile.endpoint = endpoint_env;
+
+    // Get bearer token from environment
+    const char* token_env = std::getenv("DELTA_SHARING_BEARER_TOKEN");
+    if (!token_env || strlen(token_env) == 0) {
+        throw IOException("DELTA_SHARING_BEARER_TOKEN environment variable is not set");
+    }
+    profile.bearer_token = token_env;
+
+    // Get optional fields
+    const char* version_env = std::getenv("DELTA_SHARING_CREDENTIALS_VERSION");
+    profile.share_credentials_version = version_env ? std::atoi(version_env) : 1;
+
+    const char* expiration_env = std::getenv("DELTA_SHARING_EXPIRATION_TIME");
+    profile.expiration_time = expiration_env ? expiration_env : "";
+
+    // Remove trailing slash from endpoint if present
+    if (!profile.endpoint.empty() && profile.endpoint.back() == '/') {
+        profile.endpoint.pop_back();
+    }
+
+    return profile;
+}
+
 // DeltaSharingClient implementation
 DeltaSharingClient::DeltaSharingClient(const DeltaSharingProfile &profile)
     : profile_(profile) {
