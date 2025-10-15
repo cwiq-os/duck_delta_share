@@ -1,0 +1,23 @@
+# name: test/sql/duck_delta_share.test
+# description: test duck_delta_share extension
+# group: [sql]
+
+# Before we load the extension, this will fail
+statement error
+SELECT duck_delta_share('Sam');
+----
+Catalog Error: Scalar Function with name duck_delta_share does not exist!
+
+# Require statement will ensure this test is run with this extension loaded
+require duck_delta_share
+
+# Confirm the extension works
+query I
+SELECT duck_delta_share('Sam');
+----
+DuckDeltaShare Sam 🐥
+
+query I
+SELECT duck_delta_share_openssl_version('Michael') ILIKE 'DuckDeltaShare Michael, my linked OpenSSL version is OpenSSL%';
+----
+true
