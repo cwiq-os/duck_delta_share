@@ -18,32 +18,33 @@ DeltaSharingProfile DeltaSharingProfile::FromConfig(ClientContext &context) {
     DeltaSharingProfile profile;
 
     // Get endpoint from DuckDB configuration
-    auto &config = DBConfig::GetConfig(context);
     Value endpoint_value;
-    if (!config.options.set_variables.count("delta_sharing_endpoint")) {
+    if (!context.TryGetCurrentSetting("delta_sharing_endpoint", endpoint_value) ||
+        endpoint_value.IsNull() || endpoint_value.ToString().empty()) {
         throw IOException("delta_sharing_endpoint configuration parameter is not set. Use: SET delta_sharing_endpoint='your_endpoint'");
     }
-    endpoint_value = config.options.set_variables.at("delta_sharing_endpoint");
     profile.endpoint = endpoint_value.ToString();
 
     // Get bearer token from DuckDB configuration
     Value token_value;
-    if (!config.options.set_variables.count("delta_sharing_bearer_token")) {
+    if (!context.TryGetCurrentSetting("delta_sharing_bearer_token", token_value) ||
+        token_value.IsNull() || token_value.ToString().empty()) {
         throw IOException("delta_sharing_bearer_token configuration parameter is not set. Use: SET delta_sharing_bearer_token='your_token'");
     }
-    token_value = config.options.set_variables.at("delta_sharing_bearer_token");
     profile.bearer_token = token_value.ToString();
 
     // Get optional fields
     profile.share_credentials_version = 1;
-    if (config.options.set_variables.count("delta_sharing_credentials_version")) {
-        Value version_value = config.options.set_variables.at("delta_sharing_credentials_version");
+    Value version_value;
+    if (context.TryGetCurrentSetting("delta_sharing_credentials_version", version_value) &&
+        !version_value.IsNull()) {
         profile.share_credentials_version = version_value.GetValue<int>();
     }
 
     profile.expiration_time = "";
-    if (config.options.set_variables.count("delta_sharing_expiration_time")) {
-        Value expiration_value = config.options.set_variables.at("delta_sharing_expiration_time");
+    Value expiration_value;
+    if (context.TryGetCurrentSetting("delta_sharing_expiration_time", expiration_value) &&
+        !expiration_value.IsNull()) {
         profile.expiration_time = expiration_value.ToString();
     }
 
