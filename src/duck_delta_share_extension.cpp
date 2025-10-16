@@ -210,99 +210,68 @@ static void ListTablesFunction(
 }
 
 // =============================================================================
-// DELTA_SHARE_READ - Read parquet files from a Delta Share table
+// DELTA_SHARE_READ - Get list of URLs from a Delta Share table
 // =============================================================================
 
-struct ReadDeltaShareBindData : public TableFunctionData {
-    std::string share_name;
-    std::string schema_name;
-    std::string table_name;
-    std::vector<FileAction> files;
-    std::vector<string> predicate_hints;
-    idx_t current_idx = 0;
-};
+static void ReadDeltaShareScalarFunction(
+    DataChunk &args,
+    ExpressionState &state,
+    Vector &result) {
 
-static unique_ptr<FunctionData> ReadDeltaShareBind(
-    ClientContext &context,
-    TableFunctionBindInput &input,
-    vector<LogicalType> &return_types,
-    vector<string> &names) {
+    auto &context = state.GetContext();
 
-    auto result = make_uniq<ReadDeltaShareBindData>();
+    // Process each row in the chunk
+    auto count = args.size();
 
-    // Get parameters
-    if (input.inputs.size() < 3) {
-        throw BinderException("delta_share_read requires share_name, schema_name, and table_name parameters");
-    }
+    UnifiedVectorFormat share_name_data;
+    UnifiedVectorFormat schema_name_data;
+    UnifiedVectorFormat table_name_data;
 
-    result->share_name = input.inputs[0].GetValue<string>();
-    result->schema_name = input.inputs[1].GetValue<string>();
-    result->table_name = input.inputs[2].GetValue<string>();
+    args.data[0].ToUnifiedFormat(count, share_name_data);
+    args.data[1].ToUnifiedFormat(count, schema_name_data);
+    args.data[2].ToUnifiedFormat(count, table_name_data);
 
-    // Query table files
-    try {
-        DeltaSharingProfile profile = DeltaSharingProfile::FromConfig(context);
-        DeltaSharingClient client(profile);
-        auto query_result = client.QueryTable(result->share_name, result->schema_name, result->table_name,
-                                              result->predicate_hints);
-        result->files = query_result.files;
-    } catch (const std::exception &e) {
-        throw IOException("Failed to read Delta Share table: " + std::string(e.what()));
-    }
+    auto share_name_ptr = UnifiedVectorFormat::GetData<string_t>(share_name_data);
+    auto schema_name_ptr = UnifiedVectorFormat::GetData<string_t>(schema_name_data);
+    auto table_name_ptr = UnifiedVectorFormat::GetData<string_t>(table_name_data);
 
-    // Define output schema: return file URLs and metadata
-    names.push_back("url");
-    names.push_back("id");
-    names.push_back("size");
-    names.push_back("partition_values");
+    for (idx_t i = 0; i < count; i++) {
+        auto share_idx = share_name_data.sel->get_index(i);
+        auto schema_idx = schema_name_data.sel->get_index(i);
+        auto table_idx = table_name_data.sel->get_index(i);
 
-    return_types.push_back(LogicalType::VARCHAR);
-    return_types.push_back(LogicalType::VARCHAR);
-    return_types.push_back(LogicalType::BIGINT);
-    return_types.push_back(LogicalType::VARCHAR);
+        if (!share_name_data.validity.RowIsValid(share_idx) ||
+            !schema_name_data.validity.RowIsValid(schema_idx) ||
+            !table_name_data.validity.RowIsValid(table_idx)) {
+            FlatVector::SetNull(result, i, true);
+            continue;
+        }
 
-    return std::move(result);
-}
+        auto share_name = share_name_ptr[share_idx].GetString();
+        auto schema_name = schema_name_ptr[schema_idx].GetString();
+        auto table_name = table_name_ptr[table_idx].GetString();
 
-static void ReadDeltaShareFunction(
-    ClientContext &context,
-    TableFunctionInput &data_p,
-    DataChunk &output) {
+        // Query table files
+        std::vector<FileAction> files;
+        try {
+            DeltaSharingProfile profile = DeltaSharingProfile::FromConfig(context);
+            DeltaSharingClient client(profile);
+            auto query_result = client.QueryTable(share_name, schema_name, table_name);
+            files = query_result.files;
+        } catch (const std::exception &e) {
+            throw IOException("Failed to read Delta Share table: " + std::string(e.what()));
+        }
 
-    auto &bind_data = data_p.bind_data->CastNoConst<ReadDeltaShareBindData>();
+        // Build list of URLs
+        vector<Value> url_values;
+        url_values.reserve(files.size());
+        for (const auto &file : files) {
+            url_values.push_back(Value(file.url));
+        }
 
-    idx_t count = 0;
-    while (bind_data.current_idx < bind_data.files.size() && count < STANDARD_VECTOR_SIZE) {
-        auto &file = bind_data.files[bind_data.current_idx];
-
-        output.SetValue(0, count, Value(file.url));
-        output.SetValue(1, count, Value(file.id));
-        output.SetValue(2, count, Value::BIGINT(file.size));
-        output.SetValue(3, count, Value(file.partition_values.dump()));
-
-        bind_data.current_idx++;
-        count++;
-    }
-
-    output.SetCardinality(count);
-}
-
-static void ReadDeltaShareFilterPushdown(
-    ClientContext &context,
-    LogicalGet &get,
-    FunctionData *bind_data_p,
-    vector<unique_ptr<Expression>> &filters) {
-
-    auto &bind_data = bind_data_p->Cast<ReadDeltaShareBindData>();
-
-    // Convert filters to predicate hints for Delta Sharing
-    // This is a simplified implementation - you would need to properly convert
-    // DuckDB filters to SQL predicate strings
-    for (auto &filter : filters) {
-        // For now, just capture that filters exist
-        // In a production implementation, you would convert these to SQL predicates
-        string hint = "Filter on expression: " + filter->ToString();
-        bind_data.predicate_hints.push_back(hint);
+        // Create list value and set in result
+        auto list_value = Value::LIST(LogicalType::VARCHAR, url_values);
+        result.SetValue(i, list_value);
     }
 }
 
@@ -331,12 +300,11 @@ static void LoadInternal(ExtensionLoader &loader) {
                               ListTablesFunction, ListTablesBind);
     loader.RegisterFunction(list_tables);
 
-    // Read Delta Share table function with filter pushdown - share_name, schema_name, table_name
-    TableFunction read_delta_share("delta_share_read",
+    // Read Delta Share scalar function - returns list of URLs
+    ScalarFunction read_delta_share("delta_share_read",
                                    {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
-                                   ReadDeltaShareFunction, ReadDeltaShareBind);
-    read_delta_share.filter_pushdown = true;
-    read_delta_share.pushdown_complex_filter = ReadDeltaShareFilterPushdown;
+                                   LogicalType::LIST(LogicalType::VARCHAR),
+                                   ReadDeltaShareScalarFunction);
     loader.RegisterFunction(read_delta_share);
 }
 

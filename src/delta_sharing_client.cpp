@@ -101,9 +101,10 @@ HttpResponse DeltaSharingClient::PerformRequest(
         curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
     } else if (method == "POST") {
         curl_easy_setopt(curl, CURLOPT_POST, 1L);
-        if (!post_data.empty()) {
-            curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_data.c_str());
-        }
+        // Todo: load necessary request body.
+        // For queries with WHERE clause, extract and load predicate hints
+        const char* data="{}";
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, data);
     } else if (method == "HEAD") {
         curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
     }
