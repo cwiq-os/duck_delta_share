@@ -563,8 +563,19 @@ static void ReadDeltaShareFunction(
     auto &file = bind_data.files[gstate.file_idx];
     gstate.file_idx++;
 
-    // Build read_parquet query
+    // Build read_parquet query with optional WHERE clause for filters
     std::string query = "SELECT * FROM read_parquet('" + file.url + "')";
+
+    // Apply predicate hints as WHERE clause
+    if (!bind_data.predicate_hints.empty()) {
+        query += " WHERE ";
+        for (size_t i = 0; i < bind_data.predicate_hints.size(); i++) {
+            if (i > 0) {
+                query += " AND ";
+            }
+            query += bind_data.predicate_hints[i];
+        }
+    }
 
     try {
         gstate.current_result = gstate.con->Query(query);
