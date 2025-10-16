@@ -12,6 +12,9 @@
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
+#include "duckdb/main/connection.hpp"
+#include "duckdb/main/query_result.hpp"
+#include "duckdb/main/materialized_query_result.hpp"
 
 namespace duckdb {
 
@@ -223,6 +226,7 @@ struct ReadDeltaShareBindData : public TableFunctionData {
     std::string table_name;
     std::vector<FileAction> files;
     std::vector<std::string> predicate_hints;
+    TableMetadata metadata;
     idx_t current_idx = 0;
 };
 
@@ -352,6 +356,66 @@ static std::string ConvertExpressionToPredicateHint(Expression &expr) {
     return "";
 }
 
+// Helper function to convert Delta/Spark type string to DuckDB LogicalType
+static LogicalType DeltaTypeToDuckDBType(const std::string &delta_type) {
+    // Handle basic types
+    if (delta_type == "string") return LogicalType::VARCHAR;
+    if (delta_type == "long" || delta_type == "bigint") return LogicalType::BIGINT;
+    if (delta_type == "integer" || delta_type == "int") return LogicalType::INTEGER;
+    if (delta_type == "short") return LogicalType::SMALLINT;
+    if (delta_type == "byte") return LogicalType::TINYINT;
+    if (delta_type == "float") return LogicalType::FLOAT;
+    if (delta_type == "double") return LogicalType::DOUBLE;
+    if (delta_type == "boolean") return LogicalType::BOOLEAN;
+    if (delta_type == "binary") return LogicalType::BLOB;
+    if (delta_type == "date") return LogicalType::DATE;
+    if (delta_type == "timestamp") return LogicalType::TIMESTAMP;
+
+    // Handle complex types (simplified - you may need to parse these more carefully)
+    if (delta_type.find("decimal") == 0) {
+        // For simplicity, use DOUBLE for decimal types
+        // A full implementation would parse precision and scale
+        return LogicalType::DOUBLE;
+    }
+
+    // Default to VARCHAR for unknown types
+    return LogicalType::VARCHAR;
+}
+
+// Helper function to parse Delta schema JSON string and extract column names and types
+static void ParseDeltaSchema(const std::string &schema_json, vector<string> &names, vector<LogicalType> &types) {
+    try {
+        auto schema = json::parse(schema_json);
+
+        if (!schema.contains("fields") || !schema["fields"].is_array()) {
+            throw IOException("Invalid Delta schema: missing or invalid 'fields' array");
+        }
+
+        for (const auto &field : schema["fields"]) {
+            if (!field.contains("name") || !field.contains("type")) {
+                continue;
+            }
+
+            std::string col_name = field["name"].get<std::string>();
+            names.push_back(col_name);
+
+            // Type can be a string (simple type) or an object (complex type)
+            if (field["type"].is_string()) {
+                std::string type_str = field["type"].get<std::string>();
+                types.push_back(DeltaTypeToDuckDBType(type_str));
+            } else if (field["type"].is_object()) {
+                // Complex type - for now just use VARCHAR
+                // A full implementation would handle structs, arrays, maps
+                types.push_back(LogicalType::VARCHAR);
+            } else {
+                types.push_back(LogicalType::VARCHAR);
+            }
+        }
+    } catch (const std::exception &e) {
+        throw IOException("Failed to parse Delta schema: " + std::string(e.what()));
+    }
+}
+
 // Complex filter pushdown callback
 static void ReadDeltaSharePushdownComplexFilter(
     ClientContext &context,
@@ -403,18 +467,27 @@ static unique_ptr<FunctionData> ReadDeltaShareBind(
         DeltaSharingClient client(profile);
         auto query_result = client.QueryTable(result->share_name, result->schema_name, result->table_name);
         result->files = query_result.files;
+        result->metadata = query_result.metadata;
     } catch (const std::exception &e) {
         throw IOException("Failed to read Delta Share table: " + std::string(e.what()));
     }
 
-    // Define output schema - single column with URLs
-    names.push_back("url");
-    return_types.push_back(LogicalType::VARCHAR);
+    // Parse Delta schema and define output schema from metadata
+    ParseDeltaSchema(result->metadata.schema_string, names, return_types);
 
     return std::move(result);
 }
 
-// Init function - re-query with filters if any were pushed down
+struct ReadDeltaShareGlobalState : public GlobalTableFunctionState {
+    unique_ptr<Connection> con;
+    unique_ptr<MaterializedQueryResult> current_result;
+    idx_t file_idx = 0;
+
+    ReadDeltaShareGlobalState() {
+    }
+};
+
+// Init function - re-query with filters if any were pushed down, then prepare to read parquet files
 static unique_ptr<GlobalTableFunctionState> ReadDeltaShareInit(
     ClientContext &context,
     TableFunctionInitInput &input) {
@@ -433,13 +506,26 @@ static unique_ptr<GlobalTableFunctionState> ReadDeltaShareInit(
                 bind_data.predicate_hints  // Pass predicate hints!
             );
             bind_data.files = query_result.files;
+            bind_data.metadata = query_result.metadata;
             bind_data.current_idx = 0;
         } catch (const std::exception &e) {
             throw IOException("Failed to read Delta Share table with filters: " + std::string(e.what()));
         }
     }
 
-    return make_uniq<GlobalTableFunctionState>();
+    auto state = make_uniq<ReadDeltaShareGlobalState>();
+    // Create a connection to execute read_parquet queries
+    state->con = make_uniq<Connection>(*context.db);
+
+    // Load httpfs extension if not already loaded
+    try {
+        state->con->Query("INSTALL httpfs");
+        state->con->Query("LOAD httpfs");
+    } catch (...) {
+        // Extension might already be installed/loaded, ignore errors
+    }
+
+    return std::move(state);
 }
 
 static void ReadDeltaShareFunction(
@@ -448,18 +534,54 @@ static void ReadDeltaShareFunction(
     DataChunk &output) {
 
     auto &bind_data = data_p.bind_data->CastNoConst<ReadDeltaShareBindData>();
+    auto &gstate = data_p.global_state->Cast<ReadDeltaShareGlobalState>();
 
-    idx_t count = 0;
-    while (bind_data.current_idx < bind_data.files.size() && count < STANDARD_VECTOR_SIZE) {
-        auto &file = bind_data.files[bind_data.current_idx];
-
-        output.SetValue(0, count, Value(file.url));
-
-        bind_data.current_idx++;
-        count++;
+    // If no files, return empty
+    if (bind_data.files.empty()) {
+        output.SetCardinality(0);
+        return;
     }
 
-    output.SetCardinality(count);
+    // If we have a current result and it has data, fetch from it
+    if (gstate.current_result) {
+        auto chunk = gstate.current_result->Fetch();
+        if (chunk) {
+            output.Reference(*chunk);
+            return;
+        }
+        // Current result is exhausted, move to next file
+        gstate.current_result.reset();
+    }
+
+    // Move to next file
+    if (gstate.file_idx >= bind_data.files.size()) {
+        output.SetCardinality(0);
+        return;
+    }
+
+    // Read next parquet file
+    auto &file = bind_data.files[gstate.file_idx];
+    gstate.file_idx++;
+
+    // Build read_parquet query
+    std::string query = "SELECT * FROM read_parquet('" + file.url + "')";
+
+    try {
+        gstate.current_result = gstate.con->Query(query);
+        if (gstate.current_result->HasError()) {
+            throw IOException("Failed to read parquet file: " + gstate.current_result->GetError());
+        }
+
+        // Fetch first chunk
+        auto chunk = gstate.current_result->Fetch();
+        if (chunk) {
+            output.Reference(*chunk);
+        } else {
+            output.SetCardinality(0);
+        }
+    } catch (const std::exception &e) {
+        throw IOException("Failed to read parquet file from " + file.url + ": " + std::string(e.what()));
+    }
 }
 
 // =============================================================================
