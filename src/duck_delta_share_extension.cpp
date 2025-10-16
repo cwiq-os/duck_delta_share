@@ -8,6 +8,10 @@
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
+#include "duckdb/planner/expression/bound_columnref_expression.hpp"
+#include "duckdb/planner/expression/bound_comparison_expression.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
+#include "duckdb/planner/expression/bound_operator_expression.hpp"
 
 namespace duckdb {
 
@@ -210,69 +214,252 @@ static void ListTablesFunction(
 }
 
 // =============================================================================
-// DELTA_SHARE_READ - Get list of URLs from a Delta Share table
+// DELTA_SHARE_READ - Get list of URLs from a Delta Share table (with filter pushdown)
 // =============================================================================
 
-static void ReadDeltaShareScalarFunction(
-    DataChunk &args,
-    ExpressionState &state,
-    Vector &result) {
+struct ReadDeltaShareBindData : public TableFunctionData {
+    std::string share_name;
+    std::string schema_name;
+    std::string table_name;
+    std::vector<FileAction> files;
+    std::vector<std::string> predicate_hints;
+    idx_t current_idx = 0;
+};
 
-    auto &context = state.GetContext();
+// Helper function to convert DuckDB expression to Delta Sharing predicate hint
+static std::string ConvertExpressionToPredicateHint(Expression &expr) {
+    // Delta Sharing predicate hints are SQL-like strings
+    // Examples: "col1 = 'value'", "col2 > 100", "col3 IN ('a', 'b', 'c')"
 
-    // Process each row in the chunk
-    auto count = args.size();
+    switch (expr.type) {
+        case ExpressionType::COMPARE_EQUAL:
+        case ExpressionType::COMPARE_NOTEQUAL:
+        case ExpressionType::COMPARE_LESSTHAN:
+        case ExpressionType::COMPARE_GREATERTHAN:
+        case ExpressionType::COMPARE_LESSTHANOREQUALTO:
+        case ExpressionType::COMPARE_GREATERTHANOREQUALTO: {
+            auto &comp_expr = expr.Cast<BoundComparisonExpression>();
 
-    UnifiedVectorFormat share_name_data;
-    UnifiedVectorFormat schema_name_data;
-    UnifiedVectorFormat table_name_data;
+            // Try to extract column reference and constant value
+            std::string col_name;
+            std::string value_str;
+            std::string op;
 
-    args.data[0].ToUnifiedFormat(count, share_name_data);
-    args.data[1].ToUnifiedFormat(count, schema_name_data);
-    args.data[2].ToUnifiedFormat(count, table_name_data);
+            // Get operator string
+            switch (expr.type) {
+                case ExpressionType::COMPARE_EQUAL: op = "="; break;
+                case ExpressionType::COMPARE_NOTEQUAL: op = "!="; break;
+                case ExpressionType::COMPARE_LESSTHAN: op = "<"; break;
+                case ExpressionType::COMPARE_GREATERTHAN: op = ">"; break;
+                case ExpressionType::COMPARE_LESSTHANOREQUALTO: op = "<="; break;
+                case ExpressionType::COMPARE_GREATERTHANOREQUALTO: op = ">="; break;
+                default: return "";
+            }
 
-    auto share_name_ptr = UnifiedVectorFormat::GetData<string_t>(share_name_data);
-    auto schema_name_ptr = UnifiedVectorFormat::GetData<string_t>(schema_name_data);
-    auto table_name_ptr = UnifiedVectorFormat::GetData<string_t>(table_name_data);
+            // Try to get column name from left side
+            if (comp_expr.left->type == ExpressionType::BOUND_COLUMN_REF) {
+                auto &col_ref = comp_expr.left->Cast<BoundColumnRefExpression>();
+                col_name = col_ref.GetName();
+            } else if (comp_expr.right->type == ExpressionType::BOUND_COLUMN_REF) {
+                auto &col_ref = comp_expr.right->Cast<BoundColumnRefExpression>();
+                col_name = col_ref.GetName();
+                // Swap operator direction
+                if (op == "<") op = ">";
+                else if (op == ">") op = "<";
+                else if (op == "<=") op = ">=";
+                else if (op == ">=") op = "<=";
+            }
 
-    for (idx_t i = 0; i < count; i++) {
-        auto share_idx = share_name_data.sel->get_index(i);
-        auto schema_idx = schema_name_data.sel->get_index(i);
-        auto table_idx = table_name_data.sel->get_index(i);
+            // Try to get constant value
+            Expression *const_expr = nullptr;
+            if (comp_expr.left->type == ExpressionType::VALUE_CONSTANT && !col_name.empty()) {
+                const_expr = comp_expr.left.get();
+            } else if (comp_expr.right->type == ExpressionType::VALUE_CONSTANT && !col_name.empty()) {
+                const_expr = comp_expr.right.get();
+            }
 
-        if (!share_name_data.validity.RowIsValid(share_idx) ||
-            !schema_name_data.validity.RowIsValid(schema_idx) ||
-            !table_name_data.validity.RowIsValid(table_idx)) {
-            FlatVector::SetNull(result, i, true);
-            continue;
+            if (const_expr && !col_name.empty()) {
+                auto &const_val_expr = const_expr->Cast<BoundConstantExpression>();
+                auto &value = const_val_expr.value;
+
+                // Format value based on type
+                if (value.IsNull()) {
+                    if (op == "=") return col_name + " IS NULL";
+                    if (op == "!=") return col_name + " IS NOT NULL";
+                } else {
+                    switch (value.type().id()) {
+                        case LogicalTypeId::VARCHAR:
+                            value_str = "'" + value.ToString() + "'";
+                            break;
+                        case LogicalTypeId::INTEGER:
+                        case LogicalTypeId::BIGINT:
+                        case LogicalTypeId::DOUBLE:
+                        case LogicalTypeId::FLOAT:
+                            value_str = value.ToString();
+                            break;
+                        default:
+                            value_str = "'" + value.ToString() + "'";
+                            break;
+                    }
+                    return col_name + " " + op + " " + value_str;
+                }
+            }
+            break;
         }
+        case ExpressionType::COMPARE_IN: {
+            // Handle IN expressions: "col IN (val1, val2, ...)"
+            auto &in_expr = expr.Cast<BoundOperatorExpression>();
+            if (in_expr.children.size() >= 2 &&
+                in_expr.children[0]->type == ExpressionType::BOUND_COLUMN_REF) {
+                auto &col_ref = in_expr.children[0]->Cast<BoundColumnRefExpression>();
+                std::string col_name = col_ref.GetName();
 
-        auto share_name = share_name_ptr[share_idx].GetString();
-        auto schema_name = schema_name_ptr[schema_idx].GetString();
-        auto table_name = table_name_ptr[table_idx].GetString();
+                std::vector<std::string> values;
+                for (size_t i = 1; i < in_expr.children.size(); i++) {
+                    if (in_expr.children[i]->type == ExpressionType::VALUE_CONSTANT) {
+                        auto &const_expr = in_expr.children[i]->Cast<BoundConstantExpression>();
+                        auto &value = const_expr.value;
+                        if (!value.IsNull()) {
+                            if (value.type().id() == LogicalTypeId::VARCHAR) {
+                                values.push_back("'" + value.ToString() + "'");
+                            } else {
+                                values.push_back(value.ToString());
+                            }
+                        }
+                    }
+                }
 
-        // Query table files
-        std::vector<FileAction> files;
+                if (!values.empty()) {
+                    std::string values_str = "";
+                    for (size_t i = 0; i < values.size(); i++) {
+                        if (i > 0) values_str += ", ";
+                        values_str += values[i];
+                    }
+                    return col_name + " IN (" + values_str + ")";
+                }
+            }
+            break;
+        }
+        case ExpressionType::CONJUNCTION_AND: {
+            // Handle AND expressions - could potentially split into multiple hints
+            // For now, try to convert the entire expression
+            break;
+        }
+        default:
+            break;
+    }
+
+    return "";
+}
+
+// Complex filter pushdown callback
+static void ReadDeltaSharePushdownComplexFilter(
+    ClientContext &context,
+    LogicalGet &get,
+    FunctionData *bind_data_p,
+    vector<unique_ptr<Expression>> &filters) {
+
+    auto &bind_data = bind_data_p->Cast<ReadDeltaShareBindData>();
+
+    // Convert DuckDB filters to Delta Sharing predicate hints
+    vector<unique_ptr<Expression>> remaining_filters;
+
+    for (auto &filter : filters) {
+        std::string hint = ConvertExpressionToPredicateHint(*filter);
+        if (!hint.empty()) {
+            // Successfully converted to predicate hint
+            bind_data.predicate_hints.push_back(hint);
+        } else {
+            // Could not convert, keep as post-filter
+            remaining_filters.push_back(std::move(filter));
+        }
+    }
+
+    // Update filters to only those that couldn't be pushed down
+    filters = std::move(remaining_filters);
+}
+
+static unique_ptr<FunctionData> ReadDeltaShareBind(
+    ClientContext &context,
+    TableFunctionBindInput &input,
+    vector<LogicalType> &return_types,
+    vector<string> &names) {
+
+    auto result = make_uniq<ReadDeltaShareBindData>();
+
+    // Get parameters
+    if (input.inputs.size() < 3) {
+        throw BinderException("delta_share_read requires share_name, schema_name, and table_name parameters");
+    }
+
+    result->share_name = input.inputs[0].GetValue<string>();
+    result->schema_name = input.inputs[1].GetValue<string>();
+    result->table_name = input.inputs[2].GetValue<string>();
+
+    // Query table files (will be re-queried with filters during init)
+    // For now, we fetch without filters during bind to establish schema
+    try {
+        DeltaSharingProfile profile = DeltaSharingProfile::FromConfig(context);
+        DeltaSharingClient client(profile);
+        auto query_result = client.QueryTable(result->share_name, result->schema_name, result->table_name);
+        result->files = query_result.files;
+    } catch (const std::exception &e) {
+        throw IOException("Failed to read Delta Share table: " + std::string(e.what()));
+    }
+
+    // Define output schema - single column with URLs
+    names.push_back("url");
+    return_types.push_back(LogicalType::VARCHAR);
+
+    return std::move(result);
+}
+
+// Init function - re-query with filters if any were pushed down
+static unique_ptr<GlobalTableFunctionState> ReadDeltaShareInit(
+    ClientContext &context,
+    TableFunctionInitInput &input) {
+
+    auto &bind_data = input.bind_data->CastNoConst<ReadDeltaShareBindData>();
+
+    // If predicate hints were pushed down during optimization, re-query with them
+    if (!bind_data.predicate_hints.empty()) {
         try {
             DeltaSharingProfile profile = DeltaSharingProfile::FromConfig(context);
             DeltaSharingClient client(profile);
-            auto query_result = client.QueryTable(share_name, schema_name, table_name);
-            files = query_result.files;
+            auto query_result = client.QueryTable(
+                bind_data.share_name,
+                bind_data.schema_name,
+                bind_data.table_name,
+                bind_data.predicate_hints  // Pass predicate hints!
+            );
+            bind_data.files = query_result.files;
+            bind_data.current_idx = 0;
         } catch (const std::exception &e) {
-            throw IOException("Failed to read Delta Share table: " + std::string(e.what()));
+            throw IOException("Failed to read Delta Share table with filters: " + std::string(e.what()));
         }
-
-        // Build list of URLs
-        vector<Value> url_values;
-        url_values.reserve(files.size());
-        for (const auto &file : files) {
-            url_values.push_back(Value(file.url));
-        }
-
-        // Create list value and set in result
-        auto list_value = Value::LIST(LogicalType::VARCHAR, url_values);
-        result.SetValue(i, list_value);
     }
+
+    return make_uniq<GlobalTableFunctionState>();
+}
+
+static void ReadDeltaShareFunction(
+    ClientContext &context,
+    TableFunctionInput &data_p,
+    DataChunk &output) {
+
+    auto &bind_data = data_p.bind_data->CastNoConst<ReadDeltaShareBindData>();
+
+    idx_t count = 0;
+    while (bind_data.current_idx < bind_data.files.size() && count < STANDARD_VECTOR_SIZE) {
+        auto &file = bind_data.files[bind_data.current_idx];
+
+        output.SetValue(0, count, Value(file.url));
+
+        bind_data.current_idx++;
+        count++;
+    }
+
+    output.SetCardinality(count);
 }
 
 // =============================================================================
@@ -300,11 +487,11 @@ static void LoadInternal(ExtensionLoader &loader) {
                               ListTablesFunction, ListTablesBind);
     loader.RegisterFunction(list_tables);
 
-    // Read Delta Share scalar function - returns list of URLs
-    ScalarFunction read_delta_share("delta_share_read",
+    // Read Delta Share table function - returns URLs with filter pushdown support
+    TableFunction read_delta_share("delta_share_read",
                                    {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
-                                   LogicalType::LIST(LogicalType::VARCHAR),
-                                   ReadDeltaShareScalarFunction);
+                                   ReadDeltaShareFunction, ReadDeltaShareBind, ReadDeltaShareInit);
+    read_delta_share.pushdown_complex_filter = ReadDeltaSharePushdownComplexFilter;
     loader.RegisterFunction(read_delta_share);
 }
 
