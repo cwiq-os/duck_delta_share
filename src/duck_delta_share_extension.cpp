@@ -16,7 +16,6 @@ namespace duckdb {
 // =============================================================================
 
 struct ListSharesBindData : public TableFunctionData {
-    std::string profile_path;
     std::vector<Share> shares;
     idx_t current_idx = 0;
 };
@@ -31,15 +30,7 @@ static unique_ptr<FunctionData> ListSharesBind(
 
     // Load profile and query shares
     try {
-        DeltaSharingProfile profile;
-        if (input.inputs.size() > 0 && !input.inputs[0].IsNull()) {
-            // Use profile path from parameter
-            result->profile_path = input.inputs[0].GetValue<string>();
-            profile = DeltaSharingProfile::FromFile(result->profile_path);
-        } else {
-            // Use environment variables
-            profile = DeltaSharingProfile::FromEnvironment();
-        }
+        DeltaSharingProfile profile = DeltaSharingProfile::FromConfig(context);
         DeltaSharingClient client(profile);
         result->shares = client.ListShares();
     } catch (const std::exception &e) {
@@ -82,7 +73,6 @@ static void ListSharesFunction(
 // =============================================================================
 
 struct ListSchemasBindData : public TableFunctionData {
-    std::string profile_path;
     std::string share_name;
     std::vector<Schema> schemas;
     idx_t current_idx = 0;
@@ -98,24 +88,14 @@ static unique_ptr<FunctionData> ListSchemasBind(
 
     // Get parameters
     if (input.inputs.size() < 1) {
-        throw BinderException("delta_share_list_schemas requires at least share_name parameter");
+        throw BinderException("delta_share_list_schemas requires share_name parameter");
     }
 
-    // Determine if first parameter is profile_path or share_name
-    DeltaSharingProfile profile;
-    if (input.inputs.size() >= 2 && !input.inputs[0].IsNull() && !input.inputs[1].IsNull()) {
-        // Two parameters: profile_path and share_name
-        result->profile_path = input.inputs[0].GetValue<string>();
-        result->share_name = input.inputs[1].GetValue<string>();
-        profile = DeltaSharingProfile::FromFile(result->profile_path);
-    } else {
-        // One parameter: share_name (use environment variables)
-        result->share_name = input.inputs[0].GetValue<string>();
-        profile = DeltaSharingProfile::FromEnvironment();
-    }
+    result->share_name = input.inputs[0].GetValue<string>();
 
     // Load profile and query schemas
     try {
+        DeltaSharingProfile profile = DeltaSharingProfile::FromConfig(context);
         DeltaSharingClient client(profile);
         result->schemas = client.ListSchemas(result->share_name);
     } catch (const std::exception &e) {
@@ -161,7 +141,6 @@ static void ListSchemasFunction(
 // =============================================================================
 
 struct ListTablesBindData : public TableFunctionData {
-    std::string profile_path;
     std::string share_name;
     std::string schema_name;
     std::vector<Table> tables;
@@ -178,26 +157,15 @@ static unique_ptr<FunctionData> ListTablesBind(
 
     // Get parameters
     if (input.inputs.size() < 2) {
-        throw BinderException("delta_share_list_tables requires at least share_name and schema_name parameters");
+        throw BinderException("delta_share_list_tables requires share_name and schema_name parameters");
     }
 
-    // Determine if first parameter is profile_path or share_name
-    DeltaSharingProfile profile;
-    if (input.inputs.size() >= 3 && !input.inputs[0].IsNull() && !input.inputs[1].IsNull() && !input.inputs[2].IsNull()) {
-        // Three parameters: profile_path, share_name, and schema_name
-        result->profile_path = input.inputs[0].GetValue<string>();
-        result->share_name = input.inputs[1].GetValue<string>();
-        result->schema_name = input.inputs[2].GetValue<string>();
-        profile = DeltaSharingProfile::FromFile(result->profile_path);
-    } else {
-        // Two parameters: share_name and schema_name (use environment variables)
-        result->share_name = input.inputs[0].GetValue<string>();
-        result->schema_name = input.inputs[1].GetValue<string>();
-        profile = DeltaSharingProfile::FromEnvironment();
-    }
+    result->share_name = input.inputs[0].GetValue<string>();
+    result->schema_name = input.inputs[1].GetValue<string>();
 
     // Load profile and query tables
     try {
+        DeltaSharingProfile profile = DeltaSharingProfile::FromConfig(context);
         DeltaSharingClient client(profile);
         result->tables = client.ListTables(result->share_name, result->schema_name);
     } catch (const std::exception &e) {
@@ -246,7 +214,6 @@ static void ListTablesFunction(
 // =============================================================================
 
 struct ReadDeltaShareBindData : public TableFunctionData {
-    std::string profile_path;
     std::string share_name;
     std::string schema_name;
     std::string table_name;
@@ -265,29 +232,16 @@ static unique_ptr<FunctionData> ReadDeltaShareBind(
 
     // Get parameters
     if (input.inputs.size() < 3) {
-        throw BinderException("delta_share_read requires at least share_name, schema_name, and table_name parameters");
+        throw BinderException("delta_share_read requires share_name, schema_name, and table_name parameters");
     }
 
-    // Determine if first parameter is profile_path or share_name
-    DeltaSharingProfile profile;
-    if (input.inputs.size() >= 4 && !input.inputs[0].IsNull() && !input.inputs[1].IsNull()
-        && !input.inputs[2].IsNull() && !input.inputs[3].IsNull()) {
-        // Four parameters: profile_path, share_name, schema_name, and table_name
-        result->profile_path = input.inputs[0].GetValue<string>();
-        result->share_name = input.inputs[1].GetValue<string>();
-        result->schema_name = input.inputs[2].GetValue<string>();
-        result->table_name = input.inputs[3].GetValue<string>();
-        profile = DeltaSharingProfile::FromFile(result->profile_path);
-    } else {
-        // Three parameters: share_name, schema_name, and table_name (use environment variables)
-        result->share_name = input.inputs[0].GetValue<string>();
-        result->schema_name = input.inputs[1].GetValue<string>();
-        result->table_name = input.inputs[2].GetValue<string>();
-        profile = DeltaSharingProfile::FromEnvironment();
-    }
+    result->share_name = input.inputs[0].GetValue<string>();
+    result->schema_name = input.inputs[1].GetValue<string>();
+    result->table_name = input.inputs[2].GetValue<string>();
 
     // Query table files
     try {
+        DeltaSharingProfile profile = DeltaSharingProfile::FromConfig(context);
         DeltaSharingClient client(profile);
         auto query_result = client.QueryTable(result->share_name, result->schema_name, result->table_name,
                                               result->predicate_hints);
@@ -357,32 +311,24 @@ static void ReadDeltaShareFilterPushdown(
 // =============================================================================
 
 static void LoadInternal(ExtensionLoader &loader) {
-    // List shares table function - supports 0 or 1 parameters
+    // List shares table function - no parameters
     TableFunction list_shares("delta_share_list_shares", {}, ListSharesFunction, ListSharesBind);
-    list_shares.arguments.push_back(LogicalType::VARCHAR); // optional profile_path
-    list_shares.varargs = LogicalType::VARCHAR;
     loader.RegisterFunction(list_shares);
 
-    // List schemas table function - supports 1 or 2 parameters
+    // List schemas table function - share_name
     TableFunction list_schemas("delta_share_list_schemas", {LogicalType::VARCHAR}, ListSchemasFunction, ListSchemasBind);
-    list_schemas.arguments.push_back(LogicalType::VARCHAR); // optional second parameter
-    list_schemas.varargs = LogicalType::VARCHAR;
     loader.RegisterFunction(list_schemas);
 
-    // List tables table function - supports 2 or 3 parameters
+    // List tables table function - share_name, schema_name
     TableFunction list_tables("delta_share_list_tables",
                               {LogicalType::VARCHAR, LogicalType::VARCHAR},
                               ListTablesFunction, ListTablesBind);
-    list_tables.arguments.push_back(LogicalType::VARCHAR); // optional third parameter
-    list_tables.varargs = LogicalType::VARCHAR;
     loader.RegisterFunction(list_tables);
 
-    // Read Delta Share table function with filter pushdown - supports 3 or 4 parameters
+    // Read Delta Share table function with filter pushdown - share_name, schema_name, table_name
     TableFunction read_delta_share("delta_share_read",
                                    {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
                                    ReadDeltaShareFunction, ReadDeltaShareBind);
-    read_delta_share.arguments.push_back(LogicalType::VARCHAR); // optional fourth parameter
-    read_delta_share.varargs = LogicalType::VARCHAR;
     read_delta_share.filter_pushdown = true;
     read_delta_share.pushdown_complex_filter = ReadDeltaShareFilterPushdown;
     loader.RegisterFunction(read_delta_share);

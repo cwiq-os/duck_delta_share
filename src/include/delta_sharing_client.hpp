@@ -17,9 +17,7 @@ struct DeltaSharingProfile {
     std::string bearer_token;
     std::string expiration_time; // Optional, ISO 8601 format
 
-    static DeltaSharingProfile FromFile(const std::string &profile_path);
-    static DeltaSharingProfile FromJson(const std::string &json_str);
-    static DeltaSharingProfile FromEnvironment();
+    static DeltaSharingProfile FromConfig(ClientContext &context);
 };
 
 // Delta Sharing API response structures

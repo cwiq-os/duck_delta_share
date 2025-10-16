@@ -14,59 +14,38 @@ static size_t WriteCallback(void *contents, size_t size, size_t nmemb, void *use
 }
 
 // DeltaSharingProfile implementation
-DeltaSharingProfile DeltaSharingProfile::FromFile(const std::string &profile_path) {
-    std::ifstream file(profile_path);
-    if (!file.is_open()) {
-        throw IOException("Failed to open Delta Sharing profile file: " + profile_path);
-    }
-
-    std::stringstream buffer;
-    buffer << file.rdbuf();
-    return FromJson(buffer.str());
-}
-
-DeltaSharingProfile DeltaSharingProfile::FromJson(const std::string &json_str) {
-    DeltaSharingProfile profile;
-    try {
-        auto j = json::parse(json_str);
-        profile.share_credentials_version = j.value("shareCredentialsVersion", 1);
-        profile.endpoint = j.at("endpoint").get<std::string>();
-        profile.bearer_token = j.at("bearerToken").get<std::string>();
-        profile.expiration_time = j.value("expirationTime", "");
-
-        // Remove trailing slash from endpoint if present
-        if (!profile.endpoint.empty() && profile.endpoint.back() == '/') {
-            profile.endpoint.pop_back();
-        }
-    } catch (const std::exception &e) {
-        throw IOException("Failed to parse Delta Sharing profile: " + std::string(e.what()));
-    }
-    return profile;
-}
-
-DeltaSharingProfile DeltaSharingProfile::FromEnvironment() {
+DeltaSharingProfile DeltaSharingProfile::FromConfig(ClientContext &context) {
     DeltaSharingProfile profile;
 
-    // Get endpoint from environment
-    const char* endpoint_env = std::getenv("DELTA_SHARING_ENDPOINT");
-    if (!endpoint_env || strlen(endpoint_env) == 0) {
-        throw IOException("DELTA_SHARING_ENDPOINT environment variable is not set");
+    // Get endpoint from DuckDB configuration
+    auto &config = DBConfig::GetConfig(context);
+    Value endpoint_value;
+    if (!config.options.set_variables.count("delta_sharing_endpoint")) {
+        throw IOException("delta_sharing_endpoint configuration parameter is not set. Use: SET delta_sharing_endpoint='your_endpoint'");
     }
-    profile.endpoint = endpoint_env;
+    endpoint_value = config.options.set_variables.at("delta_sharing_endpoint");
+    profile.endpoint = endpoint_value.ToString();
 
-    // Get bearer token from environment
-    const char* token_env = std::getenv("DELTA_SHARING_BEARER_TOKEN");
-    if (!token_env || strlen(token_env) == 0) {
-        throw IOException("DELTA_SHARING_BEARER_TOKEN environment variable is not set");
+    // Get bearer token from DuckDB configuration
+    Value token_value;
+    if (!config.options.set_variables.count("delta_sharing_bearer_token")) {
+        throw IOException("delta_sharing_bearer_token configuration parameter is not set. Use: SET delta_sharing_bearer_token='your_token'");
     }
-    profile.bearer_token = token_env;
+    token_value = config.options.set_variables.at("delta_sharing_bearer_token");
+    profile.bearer_token = token_value.ToString();
 
     // Get optional fields
-    const char* version_env = std::getenv("DELTA_SHARING_CREDENTIALS_VERSION");
-    profile.share_credentials_version = version_env ? std::atoi(version_env) : 1;
+    profile.share_credentials_version = 1;
+    if (config.options.set_variables.count("delta_sharing_credentials_version")) {
+        Value version_value = config.options.set_variables.at("delta_sharing_credentials_version");
+        profile.share_credentials_version = version_value.GetValue<int>();
+    }
 
-    const char* expiration_env = std::getenv("DELTA_SHARING_EXPIRATION_TIME");
-    profile.expiration_time = expiration_env ? expiration_env : "";
+    profile.expiration_time = "";
+    if (config.options.set_variables.count("delta_sharing_expiration_time")) {
+        Value expiration_value = config.options.set_variables.at("delta_sharing_expiration_time");
+        profile.expiration_time = expiration_value.ToString();
+    }
 
     // Remove trailing slash from endpoint if present
     if (!profile.endpoint.empty() && profile.endpoint.back() == '/') {
