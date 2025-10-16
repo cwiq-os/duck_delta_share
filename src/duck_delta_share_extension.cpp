@@ -311,6 +311,12 @@ static void ReadDeltaShareFilterPushdown(
 // =============================================================================
 
 static void LoadInternal(ExtensionLoader &loader) {
+
+    auto &instance = loader.GetDatabaseInstance();
+    auto &config = DBConfig::GetConfig(instance);
+
+    config.AddExtensionOption("delta_sharing_endpoint", "URL of delta sharing server", LogicalType::VARCHAR, std::string {});
+    config.AddExtensionOption("delta_sharing_bearer_token", "JWT Bearer token issued from server", LogicalType::VARCHAR, std::string {});
     // List shares table function - no parameters
     TableFunction list_shares("delta_share_list_shares", {}, ListSharesFunction, ListSharesBind);
     loader.RegisterFunction(list_shares);
