@@ -229,7 +229,7 @@ struct ReadDeltaShareBindData : public TableFunctionData {
     std::vector<std::string> predicate_hints;
     TableMetadata metadata;
     idx_t current_idx = 0;
-    std::unordered_set<std::string> metadata_columns;  // Columns not in Parquet files
+    std::unordered_set<std::string> partition_columns;  // Partition columns not in Parquet files
 };
 
 // Helper function to extract column name from a predicate hint
@@ -243,12 +243,6 @@ static std::string ExtractColumnNameFromHint(const std::string &hint) {
     return "";
 }
 
-// Helper function to check if a column is a metadata column
-static bool IsMetadataColumn(const std::string &col_name) {
-    // Delta metadata columns typically start with underscore
-    // Common ones: _change_type, _commit_version, _commit_timestamp
-    return !col_name.empty() && col_name[0] == '_';
-}
 
 // Helper function to convert DuckDB expression to Delta Sharing predicate hint
 static std::string ConvertExpressionToPredicateHint(Expression &expr) {
@@ -403,12 +397,21 @@ static LogicalType DeltaTypeToDuckDBType(const std::string &delta_type) {
 }
 
 // Helper function to parse Delta schema JSON string and extract column names and types
-static void ParseDeltaSchema(const std::string &schema_json, vector<string> &names, vector<LogicalType> &types, std::unordered_set<std::string> &metadata_columns) {
+static void ParseDeltaSchema(const std::string &schema_json, vector<string> &names, vector<LogicalType> &types, const json &partition_columns_json, std::unordered_set<std::string> &partition_columns) {
     try {
         auto schema = json::parse(schema_json);
 
         if (!schema.contains("fields") || !schema["fields"].is_array()) {
             throw IOException("Invalid Delta schema: missing or invalid 'fields' array");
+        }
+
+        // Build set of partition column names from the partition_columns JSON array
+        if (partition_columns_json.is_array()) {
+            for (const auto &partition_col : partition_columns_json) {
+                if (partition_col.is_string()) {
+                    partition_columns.insert(partition_col.get<std::string>());
+                }
+            }
         }
 
         for (const auto &field : schema["fields"]) {
@@ -418,11 +421,6 @@ static void ParseDeltaSchema(const std::string &schema_json, vector<string> &nam
 
             std::string col_name = field["name"].get<std::string>();
             names.push_back(col_name);
-
-            // Check if this is a metadata column
-            if (IsMetadataColumn(col_name)) {
-                metadata_columns.insert(col_name);
-            }
 
             // Type can be a string (simple type) or an object (complex type)
             if (field["type"].is_string()) {
@@ -498,7 +496,7 @@ static unique_ptr<FunctionData> ReadDeltaShareBind(
     }
 
     // Parse Delta schema and define output schema from metadata
-    ParseDeltaSchema(result->metadata.schema_string, names, return_types, result->metadata_columns);
+    ParseDeltaSchema(result->metadata.schema_string, names, return_types, result->metadata.partition_columns, result->partition_columns);
 
     return std::move(result);
 }
@@ -591,14 +589,14 @@ static void ReadDeltaShareFunction(
     // Build read_parquet query with optional WHERE clause for filters
     std::string query = "SELECT * FROM read_parquet('" + file.url + "')";
 
-    // Apply predicate hints as WHERE clause, but exclude metadata columns
+    // Apply predicate hints as WHERE clause, but exclude partition columns
     // that don't exist in the Parquet files
     if (!bind_data.predicate_hints.empty()) {
         std::vector<std::string> parquet_predicates;
         for (const auto &hint : bind_data.predicate_hints) {
             std::string col_name = ExtractColumnNameFromHint(hint);
             // Only include predicates for columns that exist in the Parquet file
-            if (col_name.empty() || bind_data.metadata_columns.find(col_name) == bind_data.metadata_columns.end()) {
+            if (col_name.empty() || bind_data.partition_columns.find(col_name) == bind_data.partition_columns.end()) {
                 parquet_predicates.push_back(hint);
             }
         }
