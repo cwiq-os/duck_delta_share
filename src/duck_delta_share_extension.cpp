@@ -1,7 +1,6 @@
 #define DUCKDB_EXTENSION_MAIN
 
 #include "duck_delta_share_extension.hpp"
-#include "delta_sharing_client.hpp"
 #include "duckdb.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/function/scalar_function.hpp"

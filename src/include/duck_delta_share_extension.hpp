@@ -1,6 +1,7 @@
 #pragma once
 
 #include "duckdb.hpp"
+#include "delta_sharing_client.hpp"
 
 namespace duckdb {
 
