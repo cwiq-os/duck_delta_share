@@ -15,6 +15,7 @@
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/query_result.hpp"
 #include "duckdb/main/materialized_query_result.hpp"
+#include <unordered_set>
 
 namespace duckdb {
 
@@ -228,7 +229,26 @@ struct ReadDeltaShareBindData : public TableFunctionData {
     std::vector<std::string> predicate_hints;
     TableMetadata metadata;
     idx_t current_idx = 0;
+    std::unordered_set<std::string> metadata_columns;  // Columns not in Parquet files
 };
+
+// Helper function to extract column name from a predicate hint
+static std::string ExtractColumnNameFromHint(const std::string &hint) {
+    // Predicate hints are like "col = 'value'" or "col > 100"
+    // Find the first space or operator to extract column name
+    size_t pos = hint.find_first_of(" =<>!");
+    if (pos != std::string::npos) {
+        return hint.substr(0, pos);
+    }
+    return "";
+}
+
+// Helper function to check if a column is a metadata column
+static bool IsMetadataColumn(const std::string &col_name) {
+    // Delta metadata columns typically start with underscore
+    // Common ones: _change_type, _commit_version, _commit_timestamp
+    return !col_name.empty() && col_name[0] == '_';
+}
 
 // Helper function to convert DuckDB expression to Delta Sharing predicate hint
 static std::string ConvertExpressionToPredicateHint(Expression &expr) {
@@ -383,7 +403,7 @@ static LogicalType DeltaTypeToDuckDBType(const std::string &delta_type) {
 }
 
 // Helper function to parse Delta schema JSON string and extract column names and types
-static void ParseDeltaSchema(const std::string &schema_json, vector<string> &names, vector<LogicalType> &types) {
+static void ParseDeltaSchema(const std::string &schema_json, vector<string> &names, vector<LogicalType> &types, std::unordered_set<std::string> &metadata_columns) {
     try {
         auto schema = json::parse(schema_json);
 
@@ -398,6 +418,11 @@ static void ParseDeltaSchema(const std::string &schema_json, vector<string> &nam
 
             std::string col_name = field["name"].get<std::string>();
             names.push_back(col_name);
+
+            // Check if this is a metadata column
+            if (IsMetadataColumn(col_name)) {
+                metadata_columns.insert(col_name);
+            }
 
             // Type can be a string (simple type) or an object (complex type)
             if (field["type"].is_string()) {
@@ -473,7 +498,7 @@ static unique_ptr<FunctionData> ReadDeltaShareBind(
     }
 
     // Parse Delta schema and define output schema from metadata
-    ParseDeltaSchema(result->metadata.schema_string, names, return_types);
+    ParseDeltaSchema(result->metadata.schema_string, names, return_types, result->metadata_columns);
 
     return std::move(result);
 }
@@ -566,14 +591,26 @@ static void ReadDeltaShareFunction(
     // Build read_parquet query with optional WHERE clause for filters
     std::string query = "SELECT * FROM read_parquet('" + file.url + "')";
 
-    // Apply predicate hints as WHERE clause
+    // Apply predicate hints as WHERE clause, but exclude metadata columns
+    // that don't exist in the Parquet files
     if (!bind_data.predicate_hints.empty()) {
-        query += " WHERE ";
-        for (size_t i = 0; i < bind_data.predicate_hints.size(); i++) {
-            if (i > 0) {
-                query += " AND ";
+        std::vector<std::string> parquet_predicates;
+        for (const auto &hint : bind_data.predicate_hints) {
+            std::string col_name = ExtractColumnNameFromHint(hint);
+            // Only include predicates for columns that exist in the Parquet file
+            if (col_name.empty() || bind_data.metadata_columns.find(col_name) == bind_data.metadata_columns.end()) {
+                parquet_predicates.push_back(hint);
             }
-            query += bind_data.predicate_hints[i];
+        }
+
+        if (!parquet_predicates.empty()) {
+            query += " WHERE ";
+            for (size_t i = 0; i < parquet_predicates.size(); i++) {
+                if (i > 0) {
+                    query += " AND ";
+                }
+                query += parquet_predicates[i];
+            }
         }
     }
 
