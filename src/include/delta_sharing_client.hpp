@@ -120,7 +120,7 @@ public:
         const std::string &share_name,
         const std::string &schema_name,
         const std::string &table_name,
-        const std::vector<std::string> &predicate_hints = {},
+        const json &predicate_hints = {},
         int64_t limit_hint = -1,
         int64_t version = -1);
 

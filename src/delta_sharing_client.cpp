@@ -103,8 +103,14 @@ HttpResponse DeltaSharingClient::PerformRequest(
         curl_easy_setopt(curl, CURLOPT_POST, 1L);
         // Todo: load necessary request body.
         // For queries with WHERE clause, extract and load predicate hints
-        const char* data="{}";
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, data);
+        if (post_data.empty() || post_data == "null") {
+            const char* empty_body = "{}";
+            curl_easy_setopt(curl, CURLOPT_POSTFIELDS, empty_body);
+        } else {
+            std::cout << post_data << '\n';
+            curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_data.data());
+        }
+
     } else if (method == "HEAD") {
         curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
     }
@@ -143,6 +149,7 @@ HttpResponse DeltaSharingClient::PerformRequest(
         try {
             auto error_json = json::parse(response_body);
             if (error_json.contains("message")) {
+                std::cout << error_json["message"].get<std::string>() << "\n";
                 response.error_message = error_json["message"].get<std::string>();
             }
         } catch (...) {
@@ -391,14 +398,17 @@ DeltaSharingClient::QueryTableResult DeltaSharingClient::QueryTable(
     const std::string &share_name,
     const std::string &schema_name,
     const std::string &table_name,
-    const std::vector<std::string> &predicate_hints,
+    const json &predicate_hints,
     int64_t limit_hint,
     int64_t version) {
 
     // Build POST request body
     json request_body;
     if (!predicate_hints.empty()) {
-        request_body["predicateHints"] = predicate_hints;
+        request_body["predicateHints"] = json::array();
+        request_body["predicateHints"].push_back("string");
+        request_body["version"] = 0;
+        request_body["jsonPredicateHints"] = predicate_hints.dump();
     }
     if (limit_hint > 0) {
         request_body["limitHint"] = limit_hint;
