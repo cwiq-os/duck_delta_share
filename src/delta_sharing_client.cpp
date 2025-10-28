@@ -107,7 +107,6 @@ HttpResponse DeltaSharingClient::PerformRequest(
             const char* empty_body = "{}";
             curl_easy_setopt(curl, CURLOPT_POSTFIELDS, empty_body);
         } else {
-            std::cout << post_data << '\n';
             curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_data.data());
         }
 
@@ -149,7 +148,6 @@ HttpResponse DeltaSharingClient::PerformRequest(
         try {
             auto error_json = json::parse(response_body);
             if (error_json.contains("message")) {
-                std::cout << error_json["message"].get<std::string>() << "\n";
                 response.error_message = error_json["message"].get<std::string>();
             }
         } catch (...) {
