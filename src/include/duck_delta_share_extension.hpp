@@ -5,22 +5,11 @@
 
 namespace duckdb {
 
-struct ListSharesBindData : public TableFunctionData {
-    std::vector<Share> shares;
+// Unified bind data for all list operations
+struct ListBindData : public TableFunctionData {
+    json items;  // Store items as JSON array
     idx_t current_idx = 0;
-};
-
-struct ListSchemasBindData : public TableFunctionData {
-    std::string share_name;
-    std::vector<Schema> schemas;
-    idx_t current_idx = 0;
-};
-
-struct ListTablesBindData : public TableFunctionData {
-    std::string share_name;
-    std::string schema_name;
-    std::vector<Table> tables;
-    idx_t current_idx = 0;
+    int list_type; // 0=shares, 1=schemas, 2=tables
 };
 
 struct ReadDeltaShareBindData : public TableFunctionData {

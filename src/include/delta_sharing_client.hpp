@@ -85,20 +85,20 @@ public:
     DeltaSharingClient(const DeltaSharingProfile &profile);
     ~DeltaSharingClient();
 
-    // List all shares
-    std::vector<Share> ListShares(int max_results = -1, const std::string &page_token = "");
+    // List all shares - returns JSON array of items
+    json ListShares(int max_results = -1, const std::string &page_token = "");
 
     // Get a specific share
     Share GetShare(const std::string &share_name);
 
-    // List schemas in a share
-    std::vector<Schema> ListSchemas(const std::string &share_name, int max_results = -1, const std::string &page_token = "");
+    // List schemas in a share - returns JSON array of items
+    json ListSchemas(const std::string &share_name, int max_results = -1, const std::string &page_token = "");
 
-    // List tables in a schema
-    std::vector<Table> ListTables(const std::string &share_name, const std::string &schema_name, int max_results = -1, const std::string &page_token = "");
+    // List tables in a schema - returns JSON array of items
+    json ListTables(const std::string &share_name, const std::string &schema_name, int max_results = -1, const std::string &page_token = "");
 
-    // List all tables in a share
-    std::vector<Table> ListAllTables(const std::string &share_name, int max_results = -1, const std::string &page_token = "");
+    // List all tables in a share - returns JSON array of items
+    json ListAllTables(const std::string &share_name, int max_results = -1, const std::string &page_token = "");
 
     // Get table metadata
     struct TableMetadataResponse {

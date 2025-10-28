@@ -23,170 +23,95 @@ namespace duckdb {
 // Section: Function data binds
 // Data binds used by delta_share functions
 
-static unique_ptr<FunctionData> ListSharesBind(
+// Unified bind function for all list operations
+static unique_ptr<FunctionData> ListBind(
     ClientContext &context,
     TableFunctionBindInput &input,
     vector<LogicalType> &return_types,
     vector<string> &names) {
 
-    auto result = make_uniq<ListSharesBindData>();
-
-    // Load profile and query shares
-    try {
-        DeltaSharingProfile profile = DeltaSharingProfile::FromConfig(context);
-        DeltaSharingClient client(profile);
-        result->shares = client.ListShares();
-    } catch (const std::exception &e) {
-        throw IOException("Failed to list shares: " + std::string(e.what()));
-    }
-
-    // Define output schema
-    names.push_back("name");
-    names.push_back("id");
-
-    return_types.push_back(LogicalType::VARCHAR);
-    return_types.push_back(LogicalType::VARCHAR);
-
-    return std::move(result);
-}
-
-static unique_ptr<FunctionData> ListSchemasBind(
-    ClientContext &context,
-    TableFunctionBindInput &input,
-    vector<LogicalType> &return_types,
-    vector<string> &names) {
-
-    auto result = make_uniq<ListSchemasBindData>();
-
-    if (input.inputs.size() < 1) {
-        throw BinderException("delta_share_list_schemas requires share_name parameter");
-    }
-
-    result->share_name = input.inputs[0].GetValue<string>();
+    auto result = make_uniq<ListBindData>();
 
     try {
         DeltaSharingProfile profile = DeltaSharingProfile::FromConfig(context);
         DeltaSharingClient client(profile);
-        result->schemas = client.ListSchemas(result->share_name);
+
+        // Determine what to list based on argument count
+        if (input.inputs.size() == 0) {
+            // List shares
+            result->list_type = 0;
+            result->items = client.ListShares();
+            names.push_back("name");
+            names.push_back("id");
+            return_types.push_back(LogicalType::VARCHAR);
+            return_types.push_back(LogicalType::VARCHAR);
+
+        } else if (input.inputs.size() == 1) {
+            // List schemas
+            result->list_type = 1;
+            string share_name = input.inputs[0].GetValue<string>();
+            result->items = client.ListSchemas(share_name);
+            names.push_back("name");
+            names.push_back("share");
+            names.push_back("id");
+            return_types.push_back(LogicalType::VARCHAR);
+            return_types.push_back(LogicalType::VARCHAR);
+            return_types.push_back(LogicalType::VARCHAR);
+
+        } else if (input.inputs.size() == 2) {
+            // List tables
+            result->list_type = 2;
+            string share_name = input.inputs[0].GetValue<string>();
+            string schema_name = input.inputs[1].GetValue<string>();
+            result->items = client.ListTables(share_name, schema_name);
+            names.push_back("name");
+            names.push_back("schema");
+            names.push_back("share");
+            names.push_back("id");
+            return_types.push_back(LogicalType::VARCHAR);
+            return_types.push_back(LogicalType::VARCHAR);
+            return_types.push_back(LogicalType::VARCHAR);
+            return_types.push_back(LogicalType::VARCHAR);
+        } else {
+            throw BinderException("delta_share_list accepts 0, 1, or 2 arguments");
+        }
     } catch (const std::exception &e) {
-        throw IOException("Failed to list schemas: " + std::string(e.what()));
+        throw IOException("Failed to list: " + std::string(e.what()));
     }
-
-    names.push_back("name");
-    names.push_back("share");
-    names.push_back("id");
-
-    return_types.push_back(LogicalType::VARCHAR);
-    return_types.push_back(LogicalType::VARCHAR);
-    return_types.push_back(LogicalType::VARCHAR);
 
     return std::move(result);
 }
 
-static unique_ptr<FunctionData> ListTablesBind(
-    ClientContext &context,
-    TableFunctionBindInput &input,
-    vector<LogicalType> &return_types,
-    vector<string> &names) {
-
-    auto result = make_uniq<ListTablesBindData>();
-
-    if (input.inputs.size() < 2) {
-        throw BinderException("delta_share_list_tables requires share_name and schema_name parameters");
-    }
-
-    result->share_name = input.inputs[0].GetValue<string>();
-    result->schema_name = input.inputs[1].GetValue<string>();
-
-    try {
-        DeltaSharingProfile profile = DeltaSharingProfile::FromConfig(context);
-        DeltaSharingClient client(profile);
-        result->tables = client.ListTables(result->share_name, result->schema_name);
-    } catch (const std::exception &e) {
-        throw IOException("Failed to list tables: " + std::string(e.what()));
-    }
-
-    // Define output schema
-    names.push_back("name");
-    names.push_back("schema");
-    names.push_back("share");
-    names.push_back("id");
-
-    return_types.push_back(LogicalType::VARCHAR);
-    return_types.push_back(LogicalType::VARCHAR);
-    return_types.push_back(LogicalType::VARCHAR);
-    return_types.push_back(LogicalType::VARCHAR);
-
-    return std::move(result);
-}
-
-// Section: Extension functions
-// Todo: Merge these functions together.
-// Current functions:
-// delta_share_list_shares() -> Lists all shares on Delta Sharing server
-// delta_share_list_schemas('share') -> List of schemas under specified share
-// delta_share_list_tables('share','schema') -> List of tables under a schema
-// delta_share_read('share','schema','table') -> Reads all parquet files returned by server. Excludes parition columns in read_parquet.
-//                                            -> Add predicate hints in WHERE clause
-
-static void ListSharesFunction(
+// Unified execution function for all list operations
+static void ListFunction(
     ClientContext &context,
     TableFunctionInput &data_p,
     DataChunk &output) {
 
-    auto &bind_data = data_p.bind_data->CastNoConst<ListSharesBindData>();
+    auto &bind_data = data_p.bind_data->CastNoConst<ListBindData>();
 
     idx_t count = 0;
-    while (bind_data.current_idx < bind_data.shares.size() && count < STANDARD_VECTOR_SIZE) {
-        auto &share = bind_data.shares[bind_data.current_idx];
+    while (bind_data.current_idx < bind_data.items.size() && count < STANDARD_VECTOR_SIZE) {
+        auto &item = bind_data.items[bind_data.current_idx];
 
-        output.SetValue(0, count, Value(share.name));
-        output.SetValue(1, count, Value(share.id));
+        // Set values based on list type
+        idx_t col = 0;
 
-        bind_data.current_idx++;
-        count++;
-    }
+        // All types have 'name' first
+        output.SetValue(col++, count, Value(item["name"].get<string>()));
 
-    output.SetCardinality(count);
-}
+        // Schemas have 'share' second, Tables have 'schema' second
+        if (bind_data.list_type == 1) {
+            // Schema: name, share, id
+            output.SetValue(col++, count, Value(item["share"].get<string>()));
+        } else if (bind_data.list_type == 2) {
+            // Table: name, schema, share, id
+            output.SetValue(col++, count, Value(item["schema"].get<string>()));
+            output.SetValue(col++, count, Value(item["share"].get<string>()));
+        }
 
-static void ListSchemasFunction(
-    ClientContext &context,
-    TableFunctionInput &data_p,
-    DataChunk &output) {
-
-    auto &bind_data = data_p.bind_data->CastNoConst<ListSchemasBindData>();
-
-    idx_t count = 0;
-    while (bind_data.current_idx < bind_data.schemas.size() && count < STANDARD_VECTOR_SIZE) {
-        auto &schema = bind_data.schemas[bind_data.current_idx];
-
-        output.SetValue(0, count, Value(schema.name));
-        output.SetValue(1, count, Value(schema.share));
-        output.SetValue(2, count, Value(schema.id));
-
-        bind_data.current_idx++;
-        count++;
-    }
-
-    output.SetCardinality(count);
-}
-
-static void ListTablesFunction(
-    ClientContext &context,
-    TableFunctionInput &data_p,
-    DataChunk &output) {
-
-    auto &bind_data = data_p.bind_data->CastNoConst<ListTablesBindData>();
-
-    idx_t count = 0;
-    while (bind_data.current_idx < bind_data.tables.size() && count < STANDARD_VECTOR_SIZE) {
-        auto &table = bind_data.tables[bind_data.current_idx];
-
-        output.SetValue(0, count, Value(table.name));
-        output.SetValue(1, count, Value(table.schema));
-        output.SetValue(2, count, Value(table.share));
-        output.SetValue(3, count, Value(table.id));
+        // All types have 'id' last
+        output.SetValue(col++, count, Value(item["id"].get<string>()));
 
         bind_data.current_idx++;
         count++;
@@ -737,21 +662,15 @@ static void LoadInternal(ExtensionLoader &loader) {
     config.AddExtensionOption("delta_sharing_endpoint", "URL of delta sharing server", LogicalType::VARCHAR, std::string {});
     config.AddExtensionOption("delta_sharing_bearer_token", "JWT Bearer token issued from server", LogicalType::VARCHAR, std::string {});
 
-    TableFunction list_shares("delta_share_list_shares", {}, ListSharesFunction, ListSharesBind);
+    // Unified list function that accepts 0, 1, or 2 arguments
+    TableFunction list("delta_share_list", {}, ListFunction, ListBind);
+    list.varargs = LogicalType::VARCHAR;
 
-    TableFunction list_schemas("delta_share_list_schemas", {LogicalType::VARCHAR}, ListSchemasFunction, ListSchemasBind);
-
-    TableFunction list_tables("delta_share_list_tables",
-                              {LogicalType::VARCHAR, LogicalType::VARCHAR},
-                              ListTablesFunction, ListTablesBind);
- 
     TableFunction read_delta_share("delta_share_read",
                                    {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
                                    ReadDeltaShareFunction, ReadDeltaShareBind, ReadDeltaShareInit);
     read_delta_share.pushdown_complex_filter = ReadDeltaSharePushdownComplexFilter;
-    loader.RegisterFunction(list_shares);    
-    loader.RegisterFunction(list_schemas);
-    loader.RegisterFunction(list_tables);
+    loader.RegisterFunction(list);
     loader.RegisterFunction(read_delta_share);
 
 }

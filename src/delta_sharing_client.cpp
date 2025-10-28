@@ -179,7 +179,7 @@ std::vector<json> DeltaSharingClient::ParseNDJson(const std::string &response) {
     return results;
 }
 
-std::vector<Share> DeltaSharingClient::ListShares(int max_results, const std::string &page_token) {
+json DeltaSharingClient::ListShares(int max_results, const std::string &page_token) {
     std::string query_params;
     if (max_results > 0) {
         query_params += "maxResults=" + std::to_string(max_results);
@@ -194,22 +194,15 @@ std::vector<Share> DeltaSharingClient::ListShares(int max_results, const std::st
         throw IOException("Failed to list shares: " + response.error_message);
     }
 
-    std::vector<Share> shares;
     try {
         auto j = json::parse(response.body);
         if (j.contains("items")) {
-            for (const auto &item : j["items"]) {
-                Share share;
-                share.name = item.at("name").get<std::string>();
-                share.id = item.value("id", "");
-                shares.push_back(share);
-            }
+            return j["items"];
         }
+        return json::array();
     } catch (const std::exception &e) {
         throw IOException("Failed to parse shares response: " + std::string(e.what()));
     }
-
-    return shares;
 }
 
 Share DeltaSharingClient::GetShare(const std::string &share_name) {
@@ -230,7 +223,7 @@ Share DeltaSharingClient::GetShare(const std::string &share_name) {
     return share;
 }
 
-std::vector<Schema> DeltaSharingClient::ListSchemas(const std::string &share_name, int max_results, const std::string &page_token) {
+json DeltaSharingClient::ListSchemas(const std::string &share_name, int max_results, const std::string &page_token) {
     std::string query_params;
     if (max_results > 0) {
         query_params += "maxResults=" + std::to_string(max_results);
@@ -245,26 +238,18 @@ std::vector<Schema> DeltaSharingClient::ListSchemas(const std::string &share_nam
         throw IOException("Failed to list schemas: " + response.error_message);
     }
 
-    std::vector<Schema> schemas;
     try {
         auto j = json::parse(response.body);
         if (j.contains("items")) {
-            for (const auto &item : j["items"]) {
-                Schema schema;
-                schema.name = item.at("name").get<std::string>();
-                schema.share = item.at("share").get<std::string>();
-                schema.id = item.value("id", "");
-                schemas.push_back(schema);
-            }
+            return j["items"];
         }
+        return json::array();
     } catch (const std::exception &e) {
         throw IOException("Failed to parse schemas response: " + std::string(e.what()));
     }
-
-    return schemas;
 }
 
-std::vector<Table> DeltaSharingClient::ListTables(const std::string &share_name, const std::string &schema_name, int max_results, const std::string &page_token) {
+json DeltaSharingClient::ListTables(const std::string &share_name, const std::string &schema_name, int max_results, const std::string &page_token) {
     std::string query_params;
     if (max_results > 0) {
         query_params += "maxResults=" + std::to_string(max_results);
@@ -279,28 +264,18 @@ std::vector<Table> DeltaSharingClient::ListTables(const std::string &share_name,
         throw IOException("Failed to list tables: " + response.error_message);
     }
 
-    std::vector<Table> tables;
     try {
         auto j = json::parse(response.body);
         if (j.contains("items")) {
-            for (const auto &item : j["items"]) {
-                Table table;
-                table.name = item.at("name").get<std::string>();
-                table.schema = item.at("schema").get<std::string>();
-                table.share = item.at("share").get<std::string>();
-                table.id = item.value("id", "");
-                table.share_id = item.value("shareId", "");
-                tables.push_back(table);
-            }
+            return j["items"];
         }
+        return json::array();
     } catch (const std::exception &e) {
         throw IOException("Failed to parse tables response: " + std::string(e.what()));
     }
-
-    return tables;
 }
 
-std::vector<Table> DeltaSharingClient::ListAllTables(const std::string &share_name, int max_results, const std::string &page_token) {
+json DeltaSharingClient::ListAllTables(const std::string &share_name, int max_results, const std::string &page_token) {
     std::string query_params;
     if (max_results > 0) {
         query_params += "maxResults=" + std::to_string(max_results);
@@ -315,25 +290,15 @@ std::vector<Table> DeltaSharingClient::ListAllTables(const std::string &share_na
         throw IOException("Failed to list all tables: " + response.error_message);
     }
 
-    std::vector<Table> tables;
     try {
         auto j = json::parse(response.body);
         if (j.contains("items")) {
-            for (const auto &item : j["items"]) {
-                Table table;
-                table.name = item.at("name").get<std::string>();
-                table.schema = item.at("schema").get<std::string>();
-                table.share = item.at("share").get<std::string>();
-                table.id = item.value("id", "");
-                table.share_id = item.value("shareId", "");
-                tables.push_back(table);
-            }
+            return j["items"];
         }
+        return json::array();
     } catch (const std::exception &e) {
         throw IOException("Failed to parse all tables response: " + std::string(e.what()));
     }
-
-    return tables;
 }
 
 DeltaSharingClient::TableMetadataResponse DeltaSharingClient::QueryTableMetadata(
