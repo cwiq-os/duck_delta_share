@@ -582,7 +582,7 @@ static void ReadDeltaShareFunction(
 
     query = "SELECT * FROM read_parquet('" + file.url + "')";
     if (!gstate.parquet_filters.empty()) query += gstate.parquet_filters;
-    else if (!parquet_predicates.empty()) {
+    else if (!bind_data.filters.empty()) {
         std::string parquet_filters = " WHERE ";
         std::vector<std::string> parquet_predicates;
         for (const auto &hint : bind_data.filters) {
@@ -630,7 +630,7 @@ static void LoadInternal(ExtensionLoader &loader) {
     auto &config = DBConfig::GetConfig(instance);
 
 	// Load required extensions
-    Connection con(db);
+    Connection con(loader.GetDatabaseInstance());
 	auto result = con.Query("LOAD httpfs");
 	if (result->HasError()) {
 		con.Query("INSTALL httpfs");
@@ -644,13 +644,13 @@ static void LoadInternal(ExtensionLoader &loader) {
     const std::string endpoint = std::getenv("DELTA_SHARING_ENDPOINT");
     if (!endpoint.empty()) {
         const std::string ep_query = "SET delta_sharing_endpoint=\"" + endpoint + '\"';
-        con.query(ep_query);
+        con.Query(ep_query);
     }
 
     const std::string env_token = std::getenv("DELTA_SHARING_BEARER_TOKEN");
     if (!env_token.empty()) {
         const std::string et_query = "SET delta_sharing_bearer_token=\"" + endpoint + '\"';
-        con.query(et_query);
+        con.Query(et_query);
     }
 
     // Delta Sharing Functions
