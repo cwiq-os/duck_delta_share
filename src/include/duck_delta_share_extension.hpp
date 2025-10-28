@@ -28,7 +28,8 @@ struct ReadDeltaShareBindData : public TableFunctionData {
     std::string schema_name;
     std::string table_name;
     std::vector<FileAction> files;
-    std::vector<std::string> predicate_hints;
+    std::vector<std::string> filters;
+    json predicate_hints;
     TableMetadata metadata;
     idx_t current_idx = 0;
     std::unordered_set<std::string> partition_columns;
@@ -37,10 +38,27 @@ struct ReadDeltaShareBindData : public TableFunctionData {
 struct ReadDeltaShareGlobalState : public GlobalTableFunctionState {
     unique_ptr<Connection> con;
     unique_ptr<MaterializedQueryResult> current_result;
+    std::string parquet_query;
     idx_t file_idx = 0;
 
     ReadDeltaShareGlobalState() {
     }
+};
+
+static std::unordered_map<std::string, LogicalType> DeltaLogicalMap = {
+    {"string"    , LogicalType::VARCHAR},
+    {"long"      , LogicalType::BIGINT},
+    {"bigint"    , LogicalType::BIGINT},
+    {"integer"   , LogicalType::INTEGER},
+    {"int"       , LogicalType::INTEGER},
+    {"short"     , LogicalType::SMALLINT},
+    {"byte"      , LogicalType::TINYINT},
+    {"float"     , LogicalType::FLOAT},
+    {"double"    , LogicalType::DOUBLE},
+    {"boolean"   , LogicalType::BOOLEAN},
+    {"binary"    , LogicalType::BLOB},
+    {"date"      , LogicalType::DATE},
+    {"timestamp" , LogicalType::TIMESTAMP},
 };
 
 class DuckDeltaShareExtension : public Extension {
