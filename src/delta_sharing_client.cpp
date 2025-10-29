@@ -1,5 +1,6 @@
 #include "delta_sharing_client.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/exception/http_exception.hpp"
 #include "duckdb/common/file_system.hpp"
 #include <curl/curl.h>
 #include <sstream>
@@ -21,7 +22,7 @@ DeltaSharingProfile DeltaSharingProfile::FromConfig(ClientContext &context) {
     Value endpoint_value;
     if (!context.TryGetCurrentSetting("delta_sharing_endpoint", endpoint_value) ||
         endpoint_value.IsNull() || endpoint_value.ToString().empty()) {
-        throw PermissionException("LoadProfile error: Please initialize by running SET delta_sharing_endpoint='your_endpoint'");
+        throw InvalidConfigurationException("LoadProfile error: Please initialize by running SET delta_sharing_endpoint='your_endpoint'");
     }
     profile.endpoint = endpoint_value.ToString();
 
@@ -29,7 +30,7 @@ DeltaSharingProfile DeltaSharingProfile::FromConfig(ClientContext &context) {
     Value token_value;
     if (!context.TryGetCurrentSetting("delta_sharing_bearer_token", token_value) ||
         token_value.IsNull() || token_value.ToString().empty()) {
-        throw PermissionException("LoadProfile error: Please initialize by running SET delta_sharing_bearer_token='your_token'");
+        throw InvalidConfigurationException("LoadProfile error: Please initialize by running SET delta_sharing_bearer_token='your_token'");
     }
     profile.bearer_token = token_value.ToString();
 
