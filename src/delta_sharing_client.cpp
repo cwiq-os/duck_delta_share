@@ -21,7 +21,7 @@ DeltaSharingProfile DeltaSharingProfile::FromConfig(ClientContext &context) {
     Value endpoint_value;
     if (!context.TryGetCurrentSetting("delta_sharing_endpoint", endpoint_value) ||
         endpoint_value.IsNull() || endpoint_value.ToString().empty()) {
-        throw IOException("delta_sharing_endpoint configuration parameter is not set. Use: SET delta_sharing_endpoint='your_endpoint'");
+        throw PermissionException("LoadProfile error: Please initialize by running SET delta_sharing_endpoint='your_endpoint'");
     }
     profile.endpoint = endpoint_value.ToString();
 
@@ -29,7 +29,7 @@ DeltaSharingProfile DeltaSharingProfile::FromConfig(ClientContext &context) {
     Value token_value;
     if (!context.TryGetCurrentSetting("delta_sharing_bearer_token", token_value) ||
         token_value.IsNull() || token_value.ToString().empty()) {
-        throw IOException("delta_sharing_bearer_token configuration parameter is not set. Use: SET delta_sharing_bearer_token='your_token'");
+        throw PermissionException("LoadProfile error: Please initialize by running SET delta_sharing_bearer_token='your_token'");
     }
     profile.bearer_token = token_value.ToString();
 
@@ -61,7 +61,7 @@ DeltaSharingClient::DeltaSharingClient(const DeltaSharingProfile &profile)
     : profile_(profile) {
     curl_ = curl_easy_init();
     if (!curl_) {
-        throw InternalException("Failed to initialize CURL");
+        throw InternalException("DeltaSharingClient error: Failed to initialize CURL");
     }
 }
 
@@ -101,8 +101,6 @@ HttpResponse DeltaSharingClient::PerformRequest(
         curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
     } else if (method == "POST") {
         curl_easy_setopt(curl, CURLOPT_POST, 1L);
-        // Todo: load necessary request body.
-        // For queries with WHERE clause, extract and load predicate hints
         if (post_data.empty() || post_data == "null") {
             const char* empty_body = "{}";
             curl_easy_setopt(curl, CURLOPT_POSTFIELDS, empty_body);
@@ -170,7 +168,7 @@ std::vector<json> DeltaSharingClient::ParseNDJson(const std::string &response) {
         try {
             results.push_back(json::parse(line));
         } catch (const std::exception &e) {
-            throw IOException("Failed to parse JSON line: " + std::string(e.what()));
+            throw SerializationException("ParseNDJson error: " + std::string(e.what()));
         }
     }
 
@@ -189,7 +187,7 @@ json DeltaSharingClient::ListShares(int max_results, const std::string &page_tok
 
     auto response = PerformRequest("GET", "/shares", query_params);
     if (!response.success) {
-        throw IOException("Failed to list shares: " + response.error_message);
+        throw HTTPException("ListShares error: request failed. " + response.error_message);
     }
 
     try {
@@ -199,14 +197,14 @@ json DeltaSharingClient::ListShares(int max_results, const std::string &page_tok
         }
         return json::array();
     } catch (const std::exception &e) {
-        throw IOException("Failed to parse shares response: " + std::string(e.what()));
+        throw SerializationException("ListShares error: failed to parse response. " + std::string(e.what()));
     }
 }
 
 Share DeltaSharingClient::GetShare(const std::string &share_name) {
     auto response = PerformRequest("GET", "/shares/" + share_name);
     if (!response.success) {
-        throw IOException("Failed to get share: " + response.error_message);
+        throw HTTPException("GetShare error: request failed. " + response.error_message);
     }
 
     Share share;
@@ -215,7 +213,7 @@ Share DeltaSharingClient::GetShare(const std::string &share_name) {
         share.name = j.at("share").at("name").get<std::string>();
         share.id = j.at("share").value("id", "");
     } catch (const std::exception &e) {
-        throw IOException("Failed to parse share response: " + std::string(e.what()));
+        throw SerializationException("GetShare error: failed to parse response. " + std::string(e.what()));
     }
 
     return share;
@@ -233,7 +231,7 @@ json DeltaSharingClient::ListSchemas(const std::string &share_name, int max_resu
 
     auto response = PerformRequest("GET", "/shares/" + share_name + "/schemas", query_params);
     if (!response.success) {
-        throw IOException("Failed to list schemas: " + response.error_message);
+        throw HTTPException("ListSchemas error: request failed. " + response.error_message);
     }
 
     try {
@@ -243,7 +241,7 @@ json DeltaSharingClient::ListSchemas(const std::string &share_name, int max_resu
         }
         return json::array();
     } catch (const std::exception &e) {
-        throw IOException("Failed to parse schemas response: " + std::string(e.what()));
+        throw SerializationException("ListSchemas error: failed to parse response. " + std::string(e.what()));
     }
 }
 
@@ -259,7 +257,7 @@ json DeltaSharingClient::ListTables(const std::string &share_name, const std::st
 
     auto response = PerformRequest("GET", "/shares/" + share_name + "/schemas/" + schema_name + "/tables", query_params);
     if (!response.success) {
-        throw IOException("Failed to list tables: " + response.error_message);
+        throw HTTPException("ListTables error: request failed. " + response.error_message);
     }
 
     try {
@@ -269,7 +267,7 @@ json DeltaSharingClient::ListTables(const std::string &share_name, const std::st
         }
         return json::array();
     } catch (const std::exception &e) {
-        throw IOException("Failed to parse tables response: " + std::string(e.what()));
+        throw SerializationException("ListTables error: failed to parse response. " + std::string(e.what()));
     }
 }
 
@@ -285,7 +283,7 @@ json DeltaSharingClient::ListAllTables(const std::string &share_name, int max_re
 
     auto response = PerformRequest("GET", "/shares/" + share_name + "/all-tables", query_params);
     if (!response.success) {
-        throw IOException("Failed to list all tables: " + response.error_message);
+        throw HTTPException("ListAllTables error: request failed. " + response.error_message);
     }
 
     try {
@@ -295,7 +293,7 @@ json DeltaSharingClient::ListAllTables(const std::string &share_name, int max_re
         }
         return json::array();
     } catch (const std::exception &e) {
-        throw IOException("Failed to parse all tables response: " + std::string(e.what()));
+        throw SerializationException("ListAllTables error: failed to parse response. " + std::string(e.what()));
     }
 }
 
@@ -306,14 +304,14 @@ DeltaSharingClient::TableMetadataResponse DeltaSharingClient::QueryTableMetadata
 
     auto response = PerformRequest("GET", "/shares/" + share_name + "/schemas/" + schema_name + "/tables/" + table_name + "/metadata");
     if (!response.success) {
-        throw IOException("Failed to query table metadata: " + response.error_message);
+        throw HTTPException("QueryTableMetadata error: request failed. " + response.error_message);
     }
 
     TableMetadataResponse result;
     try {
         auto lines = ParseNDJson(response.body);
         if (lines.size() < 2) {
-            throw IOException("Invalid metadata response: expected at least 2 lines");
+            throw SerializationException("QueryTableMetadata error: malformed response body from server.");
         }
 
         // First line: protocol
@@ -335,7 +333,7 @@ DeltaSharingClient::TableMetadataResponse DeltaSharingClient::QueryTableMetadata
         result.metadata.format.options = format_obj.value("options", json::object());
 
     } catch (const std::exception &e) {
-        throw IOException("Failed to parse table metadata: " + std::string(e.what()));
+        throw SerializationException("QueryTableMetadata error: Failed to parse response. " + std::string(e.what()));
     }
 
     return result;
@@ -348,11 +346,9 @@ int64_t DeltaSharingClient::QueryTableVersion(
 
     auto response = PerformRequest("HEAD", "/shares/" + share_name + "/schemas/" + schema_name + "/tables/" + table_name);
     if (!response.success) {
-        throw IOException("Failed to query table version: " + response.error_message);
+        throw HTTPException("QueryTableVersion error: request failed. " + response.error_message);
     }
 
-    // The version is returned in the Delta-Table-Version header
-    // For now, we'll parse it from metadata as HEAD might not be fully supported
     auto metadata = QueryTableMetadata(share_name, schema_name, table_name);
     return metadata.metadata.version;
 }
@@ -384,14 +380,14 @@ DeltaSharingClient::QueryTableResult DeltaSharingClient::QueryTable(
 
     auto response = PerformRequest("POST", "/shares/" + share_name + "/schemas/" + schema_name + "/tables/" + table_name + "/query", "", post_data);
     if (!response.success) {
-        throw IOException("Failed to query table: " + response.error_message);
+        throw HTTPException("QueryTable error: request failed. " + response.error_message);
     }
 
     QueryTableResult result;
     try {
         auto lines = ParseNDJson(response.body);
         if (lines.size() < 2) {
-            throw IOException("Invalid query response: expected at least 2 lines");
+            throw SerializationException("QueryTable error: malformed response body from server. ");
         }
 
         // First line: protocol
@@ -430,7 +426,7 @@ DeltaSharingClient::QueryTableResult DeltaSharingClient::QueryTable(
         }
 
     } catch (const std::exception &e) {
-        throw IOException("Failed to parse query table response: " + std::string(e.what()));
+        throw SerializationException("QueryTable error: failed to parse response. " + std::string(e.what()));
     }
 
     return result;

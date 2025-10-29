@@ -35,9 +35,8 @@ static unique_ptr<FunctionData> ListBind(
         DeltaSharingProfile profile = DeltaSharingProfile::FromConfig(context);
         DeltaSharingClient client(profile);
 
-        // Argument arity determine which function is called
+        // Argument arity determines which function is called
         if (input.inputs.size() == 0) { // Shares
-
             result->list_type = 0;
             result->items = client.ListShares();
             names.push_back("name");
@@ -69,11 +68,12 @@ static unique_ptr<FunctionData> ListBind(
             return_types.push_back(LogicalType::VARCHAR);
             return_types.push_back(LogicalType::VARCHAR);
             return_types.push_back(LogicalType::VARCHAR);
+
         } else {
-            throw BinderException("delta_share_list accepts 0, 1, or 2 arguments");
+            throw BinderException("ListBind error: function accepts 0, 1, 2 arguments");
         }
     } catch (const std::exception &e) {
-        throw IOException("Failed to list: " + std::string(e.what()));
+        throw IOException("ListBind error: " + std::string(e.what()));
     }
 
     return std::move(result);
@@ -430,10 +430,10 @@ static void ParseDeltaSchema(const std::string &schema_json, vector<string> &nam
         auto schema = json::parse(schema_json);
 
         if (!schema.contains("fields") || !schema["fields"].is_array()) {
-            throw IOException("Invalid Delta schema: missing or invalid 'fields' array");
+            throw IOException("ParseDeltaSchema error: missing or invalid 'fields' array");
         }
 
-        // Build set of partition column names from the partition_columns JSON array
+        // Get partition columns. These columns are to be excluded in read_parquet
         if (partition_columns_json.is_array()) {
             for (const auto &partition_col : partition_columns_json) {
                 if (partition_col.is_string()) {
@@ -450,7 +450,8 @@ static void ParseDeltaSchema(const std::string &schema_json, vector<string> &nam
             std::string col_name = field["name"].get<std::string>();
             names.push_back(col_name);
 
-            // Type can be a string (simple type) or an object (complex type)
+            // Simple implementation for now.
+            // Type can be a string or an object
             if (field["type"].is_string()) {
                 std::string type_str = field["type"].get<std::string>();
                 types.push_back(DeltaTypeToDuckDBType(type_str));
@@ -463,7 +464,7 @@ static void ParseDeltaSchema(const std::string &schema_json, vector<string> &nam
             }
         }
     } catch (const std::exception &e) {
-        throw IOException("Failed to parse Delta schema: " + std::string(e.what()));
+        throw IOException("ParseDeltaSchema error: " + std::string(e.what()));
     }
 }
 
@@ -550,51 +551,46 @@ static void ReadDeltaShareFunction(
     auto &bind_data = data_p.bind_data->CastNoConst<ReadDeltaShareBindData>();
     auto &gstate = data_p.global_state->Cast<ReadDeltaShareGlobalState>();
 
-    // If no files, return empty
     if (bind_data.files.empty()) {
         output.SetCardinality(0);
         return;
     }
 
-    // If we have a current result and it has data, fetch from it
     if (gstate.current_result) {
         auto chunk = gstate.current_result->Fetch();
         if (chunk) {
             output.Reference(*chunk);
             return;
         }
-        // Current result is exhausted, move to next file
         gstate.current_result.reset();
     }
 
-    // Move to next file
     if (gstate.file_idx >= bind_data.files.size()) {
         output.SetCardinality(0);
         return;
     }
 
-    // Read next parquet file
     auto &file = bind_data.files[gstate.file_idx];
     gstate.file_idx++;
 
     std::string query;
-
 
     query = "SELECT * FROM read_parquet('" + file.url + "')";
     if (!gstate.parquet_filters.empty()) query += gstate.parquet_filters;
     else if (!bind_data.filters.empty()) {
         std::string parquet_filters = " WHERE ";
         std::vector<std::string> parquet_predicates;
+        // Filter out partition columns
         for (const auto &hint : bind_data.filters) {
             if (parquet_predicates.empty() && (hint == "AND" || hint == "OR"))
                 continue;
             std::string col_name = ExtractColumnNameFromHint(hint);
-            // Only include predicates for columns that exist in the Parquet file
             if (col_name.empty() || bind_data.partition_columns.find(col_name) == bind_data.partition_columns.end()) {
                 parquet_predicates.push_back(hint);
             }
         }
 
+        // Build read_parquet query excluding partiton columns  
         for (size_t i = 0; i < parquet_predicates.size(); i++) {
             if (parquet_predicates[i] == "OR" || parquet_predicates[i] == "AND") continue;
             if (i > 0) {
@@ -607,13 +603,13 @@ static void ReadDeltaShareFunction(
     }
 
     try {
-        // Do read_parquet
+        // Use DuckDB read_parquet
         gstate.current_result = gstate.con->Query(query);
         if (gstate.current_result->HasError()) {
-            throw IOException("Failed to read parquet file: " + gstate.current_result->GetError());
+            throw IOException("ReadDeltaShare error: read_parquet query failed. Reason: " + gstate.current_result->GetError());
         }
 
-        // Fetch first chunk
+        // Return output from query
         auto chunk = gstate.current_result->Fetch();
         if (chunk) {
             output.Reference(*chunk);
@@ -621,7 +617,7 @@ static void ReadDeltaShareFunction(
             output.SetCardinality(0);
         }
     } catch (const std::exception &e) {
-        throw IOException("Failed to read parquet file from " + file.url + ": " + std::string(e.what()));
+        throw IOException("ReadDeltaShare error: failed to read parquet file from " + file.url + ": " + std::string(e.what()));
     }
 }
 
@@ -629,7 +625,7 @@ static void LoadInternal(ExtensionLoader &loader) {
     auto &instance = loader.GetDatabaseInstance();
     auto &config = DBConfig::GetConfig(instance);
 
-	// Load required extensions
+	// Delta Sharing required extensions
     Connection con(loader.GetDatabaseInstance());
 	auto result = con.Query("LOAD httpfs");
 	if (result->HasError()) {
@@ -638,20 +634,14 @@ static void LoadInternal(ExtensionLoader &loader) {
 	}
 
     // Delta Sharing config
-    config.AddExtensionOption("delta_sharing_endpoint", "URL of delta sharing server", LogicalType::VARCHAR, std::string {});
-    config.AddExtensionOption("delta_sharing_bearer_token", "JWT Bearer token issued from server", LogicalType::VARCHAR, std::string {});
-
-    const std::string endpoint = std::getenv("DELTA_SHARING_ENDPOINT");
-    if (!endpoint.empty()) {
-        const std::string ep_query = "SET delta_sharing_endpoint=\"" + endpoint + '\"';
-        con.Query(ep_query);
-    }
-
-    const std::string env_token = std::getenv("DELTA_SHARING_BEARER_TOKEN");
-    if (!env_token.empty()) {
-        const std::string et_query = "SET delta_sharing_bearer_token=\"" + endpoint + '\"';
-        con.Query(et_query);
-    }
+    const char* env_ep = std::getenv("DELTA_SHARING_ENDPOINT");
+    const char* env_token = std::getenv("DELTA_SHARING_BEARER_TOKEN");
+    config.AddExtensionOption("delta_sharing_endpoint", "URL of delta sharing server", 
+        LogicalType::VARCHAR, 
+        env_ep? std::string(env_ep) : "");
+    config.AddExtensionOption("delta_sharing_bearer_token", "JWT Bearer token issued from server", 
+        LogicalType::VARCHAR, 
+        env_token? std::string(env_token) : "");
 
     // Delta Sharing Functions
     TableFunction list("delta_share_list", {}, ListFunction, ListBind);
