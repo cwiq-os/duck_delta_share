@@ -495,21 +495,17 @@ static unique_ptr<FunctionData> ReadDeltaShareBind(
     auto result = make_uniq<ReadDeltaShareBindData>();
 
     if (input.inputs.size() < 3) {
-        throw BinderException("delta_share_read requires share_name, schema_name, and table_name parameters");
+        throw BinderException("ReadDeltaShareBind usage: delta_share_read('share_name', 'schema_name', 'table_name')");
     }
 
     result->share_name = input.inputs[0].GetValue<string>();
     result->schema_name = input.inputs[1].GetValue<string>();
     result->table_name = input.inputs[2].GetValue<string>();
 
-    try {
-        DeltaSharingProfile profile = DeltaSharingProfile::FromConfig(context);
-        DeltaSharingClient client(profile);
-        auto query_result = client.QueryTableMetadata(result->share_name, result->schema_name, result->table_name);
-        result->metadata = query_result.metadata;
-    } catch (const std::exception &e) {
-        throw IOException("Failed to read Delta Share table: " + std::string(e.what()));
-    }
+    DeltaSharingProfile profile = DeltaSharingProfile::FromConfig(context);
+    DeltaSharingClient client(profile);
+    auto query_result = client.QueryTableMetadata(result->share_name, result->schema_name, result->table_name);
+    result->metadata = query_result.metadata;
 
     ParseDeltaSchema(result->metadata.schema_string, names, return_types, result->metadata.partition_columns, result->partition_columns);
     return std::move(result);
@@ -521,21 +517,18 @@ static unique_ptr<GlobalTableFunctionState> ReadDeltaShareInit(
 
     auto &bind_data = input.bind_data->CastNoConst<ReadDeltaShareBindData>();
     // If predicate hints were pushed down during optimization, re-query with them
-    try {
-        DeltaSharingProfile profile = DeltaSharingProfile::FromConfig(context);
-        DeltaSharingClient client(profile);
-        auto query_result = client.QueryTable(
-            bind_data.share_name,
-            bind_data.schema_name,
-            bind_data.table_name,
-            bind_data.predicate_hints
-        );
-        bind_data.files = query_result.files;
-        bind_data.metadata = query_result.metadata;
-        bind_data.current_idx = 0;
-    } catch (const std::exception &e) {
-        throw IOException("Failed to read Delta Share table with filters: " + std::string(e.what()));
-    }
+
+    DeltaSharingProfile profile = DeltaSharingProfile::FromConfig(context);
+    DeltaSharingClient client(profile);
+    auto query_result = client.QueryTable(
+        bind_data.share_name,
+        bind_data.schema_name,
+        bind_data.table_name,
+        bind_data.predicate_hints
+    );
+    bind_data.files = query_result.files;
+    bind_data.metadata = query_result.metadata;
+    bind_data.current_idx = 0;
 
     auto state = make_uniq<ReadDeltaShareGlobalState>();
     // Create a connection to execute read_parquet queries
