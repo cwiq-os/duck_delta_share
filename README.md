@@ -1,86 +1,26 @@
-# DuckDeltaShare
+# Duck Delta Share
 
-This repository is based on https://github.com/duckdb/extension-template, check it out if you want to build and ship your own DuckDB extension.
+DuckDB extension for Delta Sharing protocol. By loading this extension, DuckDB could now act as a Delta Sharing client by using `delta_share_list` and `delta_share_read` functions.
+- Disclaimer: This extension is in experimental phase. Please do note that the extension might have bugs. If you find any, please raise an issue/discussion.
 
----
+## Functions
 
-This extension, DuckDeltaShare, allow you to ... <extension_goal>.
+- `delta_share_list(<0-2>)` → Can list `shares`, `schemas`, and `tables` depending on provided argument/s.
+  - `delta_share_list()`                            → List all shares under Delta Sharing server
+  - `delta_share_list('share_name')`                → List all schemas under `share_name`
+  - `delta_share_list('share_name', 'schema_name')` → List all tables under `schema_name`
 
+- `delta_share_read('share_name', 'schema_name', 'table_name')` → Reads all files under `table_name`.
+  - Supports predicate pushdown and partition column isolation (experimental).
+  - Filters might not work as expected when using this function.
 
-## Building
-### Managing dependencies
-DuckDB extensions uses VCPKG for dependency management. Enabling VCPKG is very simple: follow the [installation instructions](https://vcpkg.io/en/getting-started) or just run the following:
-```shell
-git clone https://github.com/Microsoft/vcpkg.git
-./vcpkg/bootstrap-vcpkg.sh
-export VCPKG_TOOLCHAIN_PATH=`pwd`/vcpkg/scripts/buildsystems/vcpkg.cmake
-```
-Note: VCPKG is only required for extensions that want to rely on it for dependency management. If you want to develop an extension without dependencies, or want to do your own dependency management, just skip this step. Note that the example extension uses VCPKG to build with a dependency for instructive purposes, so when skipping this step the build may not work without removing the dependency.
+## Dependencies
 
-### Build steps
-Now to build the extension, run:
-```sh
-make
-```
-The main binaries that will be built are:
-```sh
-./build/release/duckdb
-./build/release/test/unittest
-./build/release/extension/duck_delta_share/duck_delta_share.duckdb_extension
-```
-- `duckdb` is the binary for the duckdb shell with the extension code automatically loaded.
-- `unittest` is the test runner of duckdb. Again, the extension is already linked into the binary.
-- `duck_delta_share.duckdb_extension` is the loadable binary as it would be distributed.
+- `httpfs`
+- `read_parquet`
 
-## Running the extension
-To run the extension code, simply start the shell with `./build/release/duckdb`.
+## Configuration
 
-Now we can use the features from the extension directly in DuckDB. The template contains a single scalar function `duck_delta_share()` that takes a string arguments and returns a string:
-```
-D select duck_delta_share('Jane') as result;
-┌───────────────┐
-│    result     │
-│    varchar    │
-├───────────────┤
-│ DuckDeltaShare Jane 🐥 │
-└───────────────┘
-```
-
-## Running the tests
-Different tests can be created for DuckDB extensions. The primary way of testing DuckDB extensions should be the SQL tests in `./test/sql`. These SQL tests can be run using:
-```sh
-make test
-```
-
-### Installing the deployed binaries
-To install your extension binaries from S3, you will need to do two things. Firstly, DuckDB should be launched with the
-`allow_unsigned_extensions` option set to true. How to set this will depend on the client you're using. Some examples:
-
-CLI:
-```shell
-duckdb -unsigned
-```
-
-Python:
-```python
-con = duckdb.connect(':memory:', config={'allow_unsigned_extensions' : 'true'})
-```
-
-NodeJS:
-```js
-db = new duckdb.Database(':memory:', {"allow_unsigned_extensions": "true"});
-```
-
-Secondly, you will need to set the repository endpoint in DuckDB to the HTTP url of your bucket + version of the extension
-you want to install. To do this run the following SQL query in DuckDB:
-```sql
-SET custom_extension_repository='bucket.s3.eu-west-1.amazonaws.com/<your_extension_name>/latest';
-```
-Note that the `/latest` path will allow you to install the latest extension version available for your current version of
-DuckDB. To specify a specific version, you can pass the version instead.
-
-After running these steps, you can install and load your extension using the regular INSTALL/LOAD commands in DuckDB:
-```sql
-INSTALL duck_delta_share
-LOAD duck_delta_share
-```
+This extension uses internal config to store Delta Sharing credentials. You can set configuration by doing SET or running DuckDB with environment variables.
+- `delta_share_endpoint`     → Base endpoint for Delta Sharing server (i.e. `localhost:8080/delta-sharing`).
+- `delta_share_bearer_token` → Bearer token without the `Bearer ` prefix
