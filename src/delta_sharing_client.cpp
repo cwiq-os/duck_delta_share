@@ -2,11 +2,14 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/exception/http_exception.hpp"
 #include "duckdb/common/file_system.hpp"
+#include <nlohmann/json.hpp>
 #include <curl/curl.h>
 #include <sstream>
 #include <fstream>
 
 namespace duckdb {
+
+using json = nlohmann::json;
 
 // Callback for libcurl to write response data
 static size_t WriteCallback(void *contents, size_t size, size_t nmemb, void *userp) {
@@ -157,8 +160,8 @@ HttpResponse DeltaSharingClient::PerformRequest(
     return response;
 }
 
-std::vector<json> DeltaSharingClient::ParseNDJson(const std::string &response) {
-    std::vector<json> results;
+std::vector<JsonValue> DeltaSharingClient::ParseNDJson(const std::string &response) {
+    std::vector<JsonValue> results;
     std::istringstream stream(response);
     std::string line;
 
@@ -167,7 +170,8 @@ std::vector<json> DeltaSharingClient::ParseNDJson(const std::string &response) {
             continue;
         }
         try {
-            results.push_back(json::parse(line));
+            auto j = json::parse(line);
+            results.push_back(JsonValue::FromInternal(&j));
         } catch (const std::exception &e) {
             throw SerializationException("ParseNDJson error: " + std::string(e.what()));
         }
@@ -176,7 +180,7 @@ std::vector<json> DeltaSharingClient::ParseNDJson(const std::string &response) {
     return results;
 }
 
-json DeltaSharingClient::ListShares(int max_results, const std::string &page_token) {
+JsonValue DeltaSharingClient::ListShares(int max_results, const std::string &page_token) {
     std::string query_params;
     if (max_results > 0) {
         query_params += "maxResults=" + std::to_string(max_results);
@@ -194,9 +198,9 @@ json DeltaSharingClient::ListShares(int max_results, const std::string &page_tok
     try {
         auto j = json::parse(response.body);
         if (j.contains("items")) {
-            return j["items"];
+            return JsonValue::FromInternal(&j["items"]);
         }
-        return json::array();
+        return JsonValue::Array();
     } catch (const std::exception &e) {
         throw SerializationException("ListShares error: failed to parse response. " + std::string(e.what()));
     }
@@ -220,7 +224,7 @@ Share DeltaSharingClient::GetShare(const std::string &share_name) {
     return share;
 }
 
-json DeltaSharingClient::ListSchemas(const std::string &share_name, int max_results, const std::string &page_token) {
+JsonValue DeltaSharingClient::ListSchemas(const std::string &share_name, int max_results, const std::string &page_token) {
     std::string query_params;
     if (max_results > 0) {
         query_params += "maxResults=" + std::to_string(max_results);
@@ -238,15 +242,15 @@ json DeltaSharingClient::ListSchemas(const std::string &share_name, int max_resu
     try {
         auto j = json::parse(response.body);
         if (j.contains("items")) {
-            return j["items"];
+            return JsonValue::FromInternal(&j["items"]);
         }
-        return json::array();
+        return JsonValue::Array();
     } catch (const std::exception &e) {
         throw SerializationException("ListSchemas error: failed to parse response. " + std::string(e.what()));
     }
 }
 
-json DeltaSharingClient::ListTables(const std::string &share_name, const std::string &schema_name, int max_results, const std::string &page_token) {
+JsonValue DeltaSharingClient::ListTables(const std::string &share_name, const std::string &schema_name, int max_results, const std::string &page_token) {
     std::string query_params;
     if (max_results > 0) {
         query_params += "maxResults=" + std::to_string(max_results);
@@ -264,15 +268,15 @@ json DeltaSharingClient::ListTables(const std::string &share_name, const std::st
     try {
         auto j = json::parse(response.body);
         if (j.contains("items")) {
-            return j["items"];
+            return JsonValue::FromInternal(&j["items"]);
         }
-        return json::array();
+        return JsonValue::Array();
     } catch (const std::exception &e) {
         throw SerializationException("ListTables error: failed to parse response. " + std::string(e.what()));
     }
 }
 
-json DeltaSharingClient::ListAllTables(const std::string &share_name, int max_results, const std::string &page_token) {
+JsonValue DeltaSharingClient::ListAllTables(const std::string &share_name, int max_results, const std::string &page_token) {
     std::string query_params;
     if (max_results > 0) {
         query_params += "maxResults=" + std::to_string(max_results);
@@ -290,9 +294,9 @@ json DeltaSharingClient::ListAllTables(const std::string &share_name, int max_re
     try {
         auto j = json::parse(response.body);
         if (j.contains("items")) {
-            return j["items"];
+            return JsonValue::FromInternal(&j["items"]);
         }
-        return json::array();
+        return JsonValue::Array();
     } catch (const std::exception &e) {
         throw SerializationException("ListAllTables error: failed to parse response. " + std::string(e.what()));
     }
@@ -315,23 +319,33 @@ DeltaSharingClient::TableMetadataResponse DeltaSharingClient::QueryTableMetadata
             throw SerializationException("QueryTableMetadata error: malformed response body from server.");
         }
 
-        // First line: protocol
-        auto &protocol_obj = lines[0].at("protocol");
+        // First line: protocol - get internal json object
+        auto* line0_json = static_cast<json*>(lines[0].GetInternalPtr());
+        auto &protocol_obj = line0_json->at("protocol");
         result.protocol.min_reader_version = protocol_obj.at("minReaderVersion").get<int>();
 
         // Second line: metadata
-        auto &metadata_obj = lines[1].at("metaData");
+        auto* line1_json = static_cast<json*>(lines[1].GetInternalPtr());
+        auto &metadata_obj = line1_json->at("metaData");
         result.metadata.id = metadata_obj.at("id").get<std::string>();
         result.metadata.name = metadata_obj.value("name", "");
         result.metadata.description = metadata_obj.value("description", "");
         result.metadata.schema_string = metadata_obj.at("schemaString").get<std::string>();
-        result.metadata.partition_columns = metadata_obj.value("partitionColumns", json::array());
-        result.metadata.configuration = metadata_obj.value("configuration", json::object());
+
+        // Convert json to JsonValue for member fields
+        auto partition_cols = metadata_obj.value("partitionColumns", json::array());
+        result.metadata.partition_columns = JsonValue::FromInternal(&partition_cols);
+
+        auto config = metadata_obj.value("configuration", json::object());
+        result.metadata.configuration = JsonValue::FromInternal(&config);
+
         result.metadata.version = metadata_obj.value("version", 0);
 
         auto &format_obj = metadata_obj.at("format");
         result.metadata.format.provider = format_obj.at("provider").get<std::string>();
-        result.metadata.format.options = format_obj.value("options", json::object());
+
+        auto options = format_obj.value("options", json::object());
+        result.metadata.format.options = JsonValue::FromInternal(&options);
 
     } catch (const std::exception &e) {
         throw SerializationException("QueryTableMetadata error: Failed to parse response. " + std::string(e.what()));
@@ -358,17 +372,17 @@ DeltaSharingClient::QueryTableResult DeltaSharingClient::QueryTable(
     const std::string &share_name,
     const std::string &schema_name,
     const std::string &table_name,
-    const json &predicate_hints,
+    const JsonValue &predicate_hints,
     int64_t limit_hint,
     int64_t version) {
 
     // Build POST request body
     json request_body;
-    if (!predicate_hints.empty()) {
+    if (!predicate_hints.IsEmpty()) {
         request_body["predicateHints"] = json::array();
         request_body["predicateHints"].push_back("string");
         request_body["version"] = 0;
-        request_body["jsonPredicateHints"] = predicate_hints.dump();
+        request_body["jsonPredicateHints"] = predicate_hints.Dump();
     }
     if (limit_hint > 0) {
         request_body["limitHint"] = limit_hint;
@@ -391,34 +405,51 @@ DeltaSharingClient::QueryTableResult DeltaSharingClient::QueryTable(
             throw SerializationException("QueryTable error: malformed response body from server. ");
         }
 
-        // First line: protocol
-        auto &protocol_obj = lines[0].at("protocol");
+        // First line: protocol - get internal json object
+        auto* line0_json = static_cast<json*>(lines[0].GetInternalPtr());
+        auto &protocol_obj = line0_json->at("protocol");
         result.protocol.min_reader_version = protocol_obj.at("minReaderVersion").get<int>();
 
         // Second line: metadata
-        auto &metadata_obj = lines[1].at("metaData");
+        auto* line1_json = static_cast<json*>(lines[1].GetInternalPtr());
+        auto &metadata_obj = line1_json->at("metaData");
         result.metadata.id = metadata_obj.at("id").get<std::string>();
         result.metadata.name = metadata_obj.value("name", "");
         result.metadata.description = metadata_obj.value("description", "");
         result.metadata.schema_string = metadata_obj.at("schemaString").get<std::string>();
-        result.metadata.partition_columns = metadata_obj.value("partitionColumns", json::array());
-        result.metadata.configuration = metadata_obj.value("configuration", json::object());
+
+        // Convert json to JsonValue for member fields
+        auto partition_cols = metadata_obj.value("partitionColumns", json::array());
+        result.metadata.partition_columns = JsonValue::FromInternal(&partition_cols);
+
+        auto config = metadata_obj.value("configuration", json::object());
+        result.metadata.configuration = JsonValue::FromInternal(&config);
+
         result.metadata.version = metadata_obj.value("version", 0);
 
         auto &format_obj = metadata_obj.at("format");
         result.metadata.format.provider = format_obj.at("provider").get<std::string>();
-        result.metadata.format.options = format_obj.value("options", json::object());
+
+        auto options = format_obj.value("options", json::object());
+        result.metadata.format.options = JsonValue::FromInternal(&options);
 
         // Remaining lines: files
         for (size_t i = 2; i < lines.size(); i++) {
-            if (lines[i].contains("file")) {
-                auto &file_obj = lines[i].at("file");
+            if (lines[i].Contains("file")) {
+                auto* line_json = static_cast<json*>(lines[i].GetInternalPtr());
+                auto &file_obj = line_json->at("file");
                 FileAction file;
                 file.url = file_obj.at("url").get<std::string>();
                 file.id = file_obj.at("id").get<std::string>();
-                file.partition_values = file_obj.value("partitionValues", json::object());
+
+                auto part_vals = file_obj.value("partitionValues", json::object());
+                file.partition_values = JsonValue::FromInternal(&part_vals);
+
                 file.size = file_obj.at("size").get<int64_t>();
-                file.stats = file_obj.value("stats", json::object());
+
+                auto stats = file_obj.value("stats", json::object());
+                file.stats = JsonValue::FromInternal(&stats);
+
                 file.version = file_obj.value("version", 0);
                 file.timestamp = file_obj.value("timestamp", 0);
                 file.expiration_timestamp = file_obj.value("expirationTimestamp", "");

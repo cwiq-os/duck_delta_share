@@ -16,9 +16,12 @@
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/query_result.hpp"
 #include "duckdb/main/materialized_query_result.hpp"
+#include <nlohmann/json.hpp>
 #include <unordered_set>
 
 namespace duckdb {
+
+using json = nlohmann::json;
 
 // Section: Function data binds
 // Data binds used by delta_share functions
@@ -88,8 +91,10 @@ static void ListFunction(
 
     idx_t count = 0;
     // Consider: architectural tradeoff to accept NULL json fields?
-    while (bind_data.current_idx < bind_data.items.size() && count < STANDARD_VECTOR_SIZE) {
-        auto &item = bind_data.items[bind_data.current_idx];
+    // Convert JsonValue to json for internal processing
+    auto* items_json = static_cast<json*>(bind_data.items.GetInternalPtr());
+    while (bind_data.current_idx < items_json->size() && count < STANDARD_VECTOR_SIZE) {
+        auto &item = (*items_json)[bind_data.current_idx];
         idx_t col = 0;
 
         output.SetValue(col++, count, Value(item["name"].get<string>()));
@@ -476,7 +481,8 @@ static void ReadDeltaSharePushdownComplexFilter(
 
     auto &bind_data = bind_data_p->Cast<ReadDeltaShareBindData>();
     if (!filters.empty()) {
-        bind_data.predicate_hints = GetPredicateHints(filters);
+        auto predicate_json = GetPredicateHints(filters);
+        bind_data.predicate_hints = JsonValue::FromInternal(&predicate_json);
         for (auto &filter : filters) {
             ParseExpression(*filter, bind_data.filters);
             bind_data.filters.push_back("AND");
@@ -507,7 +513,9 @@ static unique_ptr<FunctionData> ReadDeltaShareBind(
     auto query_result = client.QueryTableMetadata(result->share_name, result->schema_name, result->table_name);
     result->metadata = query_result.metadata;
 
-    ParseDeltaSchema(result->metadata.schema_string, names, return_types, result->metadata.partition_columns, result->partition_columns);
+    // Convert JsonValue to json for ParseDeltaSchema
+    auto* partition_cols_json = static_cast<const json*>(result->metadata.partition_columns.GetInternalPtr());
+    ParseDeltaSchema(result->metadata.schema_string, names, return_types, *partition_cols_json, result->partition_columns);
     return std::move(result);
 }
 

@@ -1,14 +1,12 @@
 #pragma once
 
 #include "duckdb.hpp"
+#include "delta_sharing_json.hpp"
 #include <string>
 #include <vector>
 #include <memory>
-#include <nlohmann/json.hpp>
 
 namespace duckdb {
-
-using json = nlohmann::json;
 
 // Delta Sharing Profile structure
 struct DeltaSharingProfile {
@@ -46,7 +44,7 @@ struct Protocol {
 
 struct Format {
     std::string provider; // "parquet"
-    json options;
+    JsonValue options;
 };
 
 struct TableMetadata {
@@ -55,17 +53,17 @@ struct TableMetadata {
     std::string description;
     Format format;
     std::string schema_string;
-    json partition_columns;
-    json configuration;
+    JsonValue partition_columns;
+    JsonValue configuration;
     int version;
 };
 
 struct FileAction {
     std::string url;
     std::string id;
-    json partition_values;
+    JsonValue partition_values;
     int64_t size;
-    json stats; // Optional
+    JsonValue stats; // Optional
     int64_t version; // Optional
     int64_t timestamp; // Optional
     std::string expiration_timestamp; // Optional
@@ -86,19 +84,19 @@ public:
     ~DeltaSharingClient();
 
     // List all shares - returns JSON array of items
-    json ListShares(int max_results = -1, const std::string &page_token = "");
+    JsonValue ListShares(int max_results = -1, const std::string &page_token = "");
 
     // Get a specific share
     Share GetShare(const std::string &share_name);
 
     // List schemas in a share - returns JSON array of items
-    json ListSchemas(const std::string &share_name, int max_results = -1, const std::string &page_token = "");
+    JsonValue ListSchemas(const std::string &share_name, int max_results = -1, const std::string &page_token = "");
 
     // List tables in a schema - returns JSON array of items
-    json ListTables(const std::string &share_name, const std::string &schema_name, int max_results = -1, const std::string &page_token = "");
+    JsonValue ListTables(const std::string &share_name, const std::string &schema_name, int max_results = -1, const std::string &page_token = "");
 
     // List all tables in a share - returns JSON array of items
-    json ListAllTables(const std::string &share_name, int max_results = -1, const std::string &page_token = "");
+    JsonValue ListAllTables(const std::string &share_name, int max_results = -1, const std::string &page_token = "");
 
     // Get table metadata
     struct TableMetadataResponse {
@@ -120,7 +118,7 @@ public:
         const std::string &share_name,
         const std::string &schema_name,
         const std::string &table_name,
-        const json &predicate_hints = {},
+        const JsonValue &predicate_hints = JsonValue::Object(),
         int64_t limit_hint = -1,
         int64_t version = -1);
 
@@ -139,7 +137,7 @@ private:
     std::string BuildUrl(const std::string &path, const std::string &query_params = "");
 
     // Parse newline-delimited JSON response
-    std::vector<json> ParseNDJson(const std::string &response);
+    std::vector<JsonValue> ParseNDJson(const std::string &response);
 };
 
 } // namespace duckdb

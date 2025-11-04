@@ -7,7 +7,7 @@ namespace duckdb {
 
 // Unified bind data for all list operations
 struct ListBindData : public TableFunctionData {
-    json items;  // Store items as JSON array
+    JsonValue items;  // Store items as JSON array
     idx_t current_idx = 0;
     int list_type; // 0=shares, 1=schemas, 2=tables
 };
@@ -18,7 +18,7 @@ struct ReadDeltaShareBindData : public TableFunctionData {
     std::string table_name;
     std::vector<FileAction> files;
     std::vector<std::string> filters;
-    json predicate_hints;
+    JsonValue predicate_hints;
     TableMetadata metadata;
     idx_t current_idx = 0;
     std::unordered_set<std::string> partition_columns;

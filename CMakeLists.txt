@@ -19,6 +19,7 @@ include_directories(src/include)
 set(EXTENSION_SOURCES
     src/duck_delta_share_extension.cpp
     src/delta_sharing_client.cpp
+    src/delta_sharing_json.cpp
 )
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
