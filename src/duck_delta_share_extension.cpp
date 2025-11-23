@@ -573,13 +573,13 @@ static void ReadDeltaShareFunction(
 
     auto &file = bind_data.files[gstate.file_idx];
     gstate.file_idx++;
-
     std::string query;
 
     query = "SELECT * FROM read_parquet('" + file.url + "')";
     if (!gstate.parquet_filters.empty()) query += gstate.parquet_filters;
     else if (!bind_data.filters.empty()) {
         std::string parquet_filters = " WHERE ";
+        size_t filter_count{0};
         std::vector<std::string> parquet_predicates;
         // Filter out partition columns
         for (const auto &hint : bind_data.filters) {
@@ -598,14 +598,19 @@ static void ReadDeltaShareFunction(
                 parquet_filters += ' ' + parquet_predicates[i - 1] + ' ';
             }
             parquet_filters += parquet_predicates[i];
+            ++filter_count;
         }
-        gstate.parquet_filters = parquet_filters;
-        query += parquet_filters;
+        if (filter_count) {
+            gstate.parquet_filters = parquet_filters;
+            query += parquet_filters;
+        } else {
+            gstate.parquet_filters = ";";
+        }
     }
 
     try {
         // Use DuckDB read_parquet
-        gstate.current_result = gstate.con->Query(query);
+        gstate.current_result = gstate.con->SendQuery(query);
         if (gstate.current_result->HasError()) {
             throw IOException("ReadDeltaShare error: read_parquet query failed. Reason: " + gstate.current_result->GetError());
         }
@@ -615,7 +620,8 @@ static void ReadDeltaShareFunction(
         if (chunk) {
             output.Reference(*chunk);
         } else {
-            output.SetCardinality(0);
+            gstate.current_result.reset();
+            gstate.file_idx++;
         }
     } catch (const std::exception &e) {
         throw IOException("ReadDeltaShare error: failed to read parquet file from " + file.url + ": " + std::string(e.what()));

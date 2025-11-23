@@ -26,7 +26,7 @@ struct ReadDeltaShareBindData : public TableFunctionData {
 
 struct ReadDeltaShareGlobalState : public GlobalTableFunctionState {
     unique_ptr<Connection> con;
-    unique_ptr<MaterializedQueryResult> current_result;
+    unique_ptr<QueryResult> current_result;
     std::string parquet_filters;
     idx_t file_idx = 0;
 
