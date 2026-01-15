@@ -22,6 +22,7 @@ struct ReadDeltaShareBindData : public TableFunctionData {
     TableMetadata metadata;
     idx_t current_idx = 0;
     std::unordered_set<std::string> partition_columns;
+    std::vector<std::string> column_names;  // Store column names for projection mapping
 };
 
 struct ReadDeltaShareGlobalState : public GlobalTableFunctionState {
@@ -29,6 +30,8 @@ struct ReadDeltaShareGlobalState : public GlobalTableFunctionState {
     unique_ptr<QueryResult> current_result;
     std::string parquet_filters;
     idx_t file_idx = 0;
+    std::vector<idx_t> projected_column_ids;     // Column IDs to project
+    std::vector<std::string> projected_columns;  // Column names to SELECT
 
     ReadDeltaShareGlobalState() {
     }

@@ -153,6 +153,7 @@ static unique_ptr<FunctionData> ReadDeltaShareBind(
     // Convert JsonValue to json for ParseDeltaSchema
     auto* partition_cols_json = static_cast<const json*>(result->metadata.partition_columns.GetInternalPtr());
     ParseDeltaSchema(result->metadata.schema_string, names, return_types, *partition_cols_json, result->partition_columns);
+    result->column_names = names;  // Store column names for projection mapping
     return std::move(result);
 }
 
@@ -176,6 +177,15 @@ static unique_ptr<GlobalTableFunctionState> ReadDeltaShareInit(
     bind_data.current_idx = 0;
 
     auto state = make_uniq<ReadDeltaShareGlobalState>();
+
+    // Capture projection info - map column IDs to column names
+    for (auto col_id : input.column_ids) {
+        if (col_id != COLUMN_IDENTIFIER_ROW_ID && col_id < bind_data.column_names.size()) {
+            state->projected_column_ids.push_back(col_id);
+            state->projected_columns.push_back(bind_data.column_names[col_id]);
+        }
+    }
+
     // Create a connection to execute read_parquet queries
     state->con = make_uniq<Connection>(*context.db);
     return std::move(state);
@@ -212,7 +222,30 @@ static void ReadDeltaShareFunction(
     gstate.file_idx++;
     std::string query;
 
-    query = "SELECT * FROM read_parquet('" + file.url + "')";
+    // Build column list for projection pushdown, excluding partition columns
+    std::string select_columns;
+    if (!gstate.projected_columns.empty()) {
+        std::vector<std::string> parquet_columns;
+        for (const auto &col : gstate.projected_columns) {
+            // Only include non-partition columns (partition values aren't in parquet files)
+            if (bind_data.partition_columns.find(col) == bind_data.partition_columns.end()) {
+                parquet_columns.push_back("\"" + col + "\"");
+            }
+        }
+        if (!parquet_columns.empty()) {
+            for (size_t i = 0; i < parquet_columns.size(); i++) {
+                if (i > 0) select_columns += ", ";
+                select_columns += parquet_columns[i];
+            }
+        } else {
+            // All projected columns are partition columns - select minimal data
+            select_columns = "*";
+        }
+    } else {
+        select_columns = "*";
+    }
+
+    query = "SELECT " + select_columns + " FROM read_parquet('" + file.url + "')";
     if (!gstate.parquet_filters.empty()) query += gstate.parquet_filters;
     else if (!bind_data.filters.empty()) {
         std::string parquet_filters = " WHERE ";
@@ -294,6 +327,7 @@ static void LoadInternal(ExtensionLoader &loader) {
     TableFunction read_delta_share("delta_share_read",
                                    {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
                                    ReadDeltaShareFunction, ReadDeltaShareBind, ReadDeltaShareInit);
+    read_delta_share.projection_pushdown = true;
     read_delta_share.pushdown_complex_filter = ReadDeltaSharePushdownComplexFilter;
     loader.RegisterFunction(list);
     loader.RegisterFunction(read_delta_share);
