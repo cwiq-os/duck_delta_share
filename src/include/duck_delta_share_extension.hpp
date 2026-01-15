@@ -34,22 +34,6 @@ struct ReadDeltaShareGlobalState : public GlobalTableFunctionState {
     }
 };
 
-static std::unordered_map<std::string, LogicalType> DeltaLogicalMap = {
-    {"string"    , LogicalType::VARCHAR},
-    {"long"      , LogicalType::BIGINT},
-    {"bigint"    , LogicalType::BIGINT},
-    {"integer"   , LogicalType::INTEGER},
-    {"int"       , LogicalType::INTEGER},
-    {"short"     , LogicalType::SMALLINT},
-    {"byte"      , LogicalType::TINYINT},
-    {"float"     , LogicalType::FLOAT},
-    {"double"    , LogicalType::DOUBLE},
-    {"boolean"   , LogicalType::BOOLEAN},
-    {"binary"    , LogicalType::BLOB},
-    {"date"      , LogicalType::DATE},
-    {"timestamp" , LogicalType::TIMESTAMP},
-};
-
 class DuckDeltaShareExtension : public Extension {
 public:
 	void Load(ExtensionLoader &db) override;
