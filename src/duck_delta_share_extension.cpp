@@ -11,6 +11,7 @@
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/query_result.hpp"
 #include "duckdb/main/materialized_query_result.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
 #include <nlohmann/json.hpp>
 #include <unordered_set>
 
@@ -298,6 +299,86 @@ static void ReadDeltaShareFunction(
     }
 }
 
+// Section: delta_share_list_files scalar function
+
+static unique_ptr<FunctionData> DeltaShareListFilesBind(
+    ClientContext &context,
+    ScalarFunction &bound_function,
+    vector<unique_ptr<Expression>> &arguments) {
+
+    auto result = make_uniq<DeltaShareListFilesBindData>();
+    result->has_predicate_hints = (arguments.size() == 4);
+    return std::move(result);
+}
+
+static void DeltaShareListFilesFunction(
+    DataChunk &args,
+    ExpressionState &state,
+    Vector &result) {
+
+    auto &bind_data = state.expr.Cast<BoundFunctionExpression>().bind_info->Cast<DeltaShareListFilesBindData>();
+
+    idx_t count = args.size();
+
+    // Setup result as LIST(VARCHAR)
+    result.SetVectorType(VectorType::FLAT_VECTOR);
+    auto list_data = FlatVector::GetData<list_entry_t>(result);
+    auto &child_vector = ListVector::GetEntry(result);
+    auto &result_validity = FlatVector::Validity(result);
+
+    idx_t total_size = 0;
+
+    // Process each row in the input
+    for (idx_t row_idx = 0; row_idx < count; row_idx++) {
+        // Get argument values
+        auto share_name = args.data[0].GetValue(row_idx).ToString();
+        auto schema_name = args.data[1].GetValue(row_idx).ToString();
+        auto table_name = args.data[2].GetValue(row_idx).ToString();
+
+        // Handle optional predicate hints
+        JsonValue predicate_hints = JsonValue::Object();
+        if (args.ColumnCount() >= 4) {
+            auto pred_value = args.data[3].GetValue(row_idx);
+            if (!pred_value.IsNull()) {
+                string predicate_string = pred_value.ToString();
+                auto predicate_json = ParsePredicateStringToJson(predicate_string);
+                predicate_hints = JsonValue::FromInternal(&predicate_json);
+            }
+        }
+
+        try {
+            // Get client from context
+            auto &context = state.GetContext();
+            DeltaSharingProfile profile = DeltaSharingProfile::FromConfig(context);
+            DeltaSharingClient client(profile);
+
+            // Query table to get files
+            auto query_result = client.QueryTable(
+                share_name, schema_name, table_name, predicate_hints);
+
+            // Set list entry metadata
+            list_data[row_idx].offset = total_size;
+            list_data[row_idx].length = query_result.files.size();
+
+            // Reserve space in child vector
+            ListVector::Reserve(result, total_size + query_result.files.size());
+            auto child_data = FlatVector::GetData<string_t>(child_vector);
+
+            // Add file URLs to child vector
+            for (size_t i = 0; i < query_result.files.size(); i++) {
+                child_data[total_size + i] = StringVector::AddString(child_vector, query_result.files[i].url);
+            }
+
+            total_size += query_result.files.size();
+
+        } catch (const std::exception &e) {
+            throw IOException("delta_share_list_files error: " + std::string(e.what()));
+        }
+    }
+
+    ListVector::SetListSize(result, total_size);
+}
+
 static void LoadInternal(ExtensionLoader &loader) {
     auto &instance = loader.GetDatabaseInstance();
     auto &config = DBConfig::GetConfig(instance);
@@ -331,6 +412,27 @@ static void LoadInternal(ExtensionLoader &loader) {
     read_delta_share.pushdown_complex_filter = ReadDeltaSharePushdownComplexFilter;
     loader.RegisterFunction(list);
     loader.RegisterFunction(read_delta_share);
+
+    // Scalar function: delta_share_list_files
+    ScalarFunctionSet list_files_set("delta_share_list_files");
+
+    // 3-argument version (no predicate hints)
+    ScalarFunction list_files_3arg(
+        {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
+        LogicalType::LIST(LogicalType::VARCHAR),
+        DeltaShareListFilesFunction,
+        DeltaShareListFilesBind);
+
+    // 4-argument version (with predicate hints)
+    ScalarFunction list_files_4arg(
+        {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
+        LogicalType::LIST(LogicalType::VARCHAR),
+        DeltaShareListFilesFunction,
+        DeltaShareListFilesBind);
+
+    list_files_set.AddFunction(list_files_3arg);
+    list_files_set.AddFunction(list_files_4arg);
+    loader.RegisterFunction(list_files_set);
 
 }
 
