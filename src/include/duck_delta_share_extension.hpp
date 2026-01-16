@@ -2,6 +2,7 @@
 
 #include "duckdb.hpp"
 #include "delta_sharing_client.hpp"
+#include <atomic>
 
 namespace duckdb {
 
@@ -25,15 +26,23 @@ struct ReadDeltaShareBindData : public TableFunctionData {
     std::vector<std::string> column_names;  // Store column names for projection mapping
 };
 
-struct ReadDeltaShareGlobalState : public GlobalTableFunctionState {
-    unique_ptr<Connection> con;
-    unique_ptr<QueryResult> current_result;
-    std::string parquet_filters;
-    idx_t file_idx = 0;
-    std::vector<idx_t> projected_column_ids;     // Column IDs to project
-    std::vector<std::string> projected_columns;  // Column names to SELECT
+struct ReadDeltaShareLocalState : public LocalTableFunctionState {
+    unique_ptr<Connection> con;              // Per-thread connection
+    unique_ptr<QueryResult> current_result;  // Per-thread query result
+    idx_t current_file_idx;                  // File this thread is processing
 
-    ReadDeltaShareGlobalState() {
+    ReadDeltaShareLocalState() : current_file_idx(DConstants::INVALID_INDEX) {}
+};
+
+struct ReadDeltaShareGlobalState : public GlobalTableFunctionState {
+    atomic<idx_t> next_file_idx{0};          // Thread-safe file assignment
+    std::string parquet_filters;             // Computed once, shared read-only
+    std::vector<idx_t> projected_column_ids;
+    std::vector<std::string> projected_columns;
+    idx_t file_count{0};
+
+    idx_t MaxThreads() const override {
+        return file_count > 0 ? file_count : 1;
     }
 };
 
