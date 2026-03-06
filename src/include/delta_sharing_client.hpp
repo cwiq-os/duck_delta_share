@@ -14,6 +14,7 @@ struct DeltaSharingProfile {
     std::string endpoint;
     std::string bearer_token;
     std::string expiration_time; // Optional, ISO 8601 format
+    bool enable_query_hints = false;
 
     static DeltaSharingProfile FromConfig(ClientContext &context);
 };
@@ -120,7 +121,8 @@ public:
         const std::string &table_name,
         const JsonValue &predicate_hints = JsonValue::Object(),
         int64_t limit_hint = -1,
-        int64_t version = -1);
+        int64_t version = -1,
+        const std::string &query_hint = "");
 
 private:
     DeltaSharingProfile profile_;

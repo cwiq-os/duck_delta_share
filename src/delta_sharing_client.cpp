@@ -52,6 +52,12 @@ DeltaSharingProfile DeltaSharingProfile::FromConfig(ClientContext &context) {
         profile.expiration_time = expiration_value.ToString();
     }
 
+    Value query_hints_value;
+    if (context.TryGetCurrentSetting("delta_sharing_enable_query_hints", query_hints_value) &&
+        !query_hints_value.IsNull()) {
+        profile.enable_query_hints = query_hints_value.GetValue<bool>();
+    }
+
     // Remove trailing slash from endpoint if present
     if (!profile.endpoint.empty() && profile.endpoint.back() == '/') {
         profile.endpoint.pop_back();
@@ -374,7 +380,8 @@ DeltaSharingClient::QueryTableResult DeltaSharingClient::QueryTable(
     const std::string &table_name,
     const JsonValue &predicate_hints,
     int64_t limit_hint,
-    int64_t version) {
+    int64_t version,
+    const std::string &query_hint) {
 
     // Build POST request body
     json request_body;
@@ -389,6 +396,9 @@ DeltaSharingClient::QueryTableResult DeltaSharingClient::QueryTable(
     }
     if (version > 0) {
         request_body["version"] = version;
+    }
+    if (!query_hint.empty()) {
+        request_body["queryHint"] = query_hint;
     }
 
     std::string post_data = request_body.dump();

@@ -167,11 +167,20 @@ static unique_ptr<GlobalTableFunctionState> ReadDeltaShareInit(
 
     DeltaSharingProfile profile = DeltaSharingProfile::FromConfig(context);
     DeltaSharingClient client(profile);
+
+    std::string query_hint = "";
+    if (profile.enable_query_hints) {
+        query_hint = context.GetCurrentQuery();
+    }
+
     auto query_result = client.QueryTable(
         bind_data.share_name,
         bind_data.schema_name,
         bind_data.table_name,
-        bind_data.predicate_hints
+        bind_data.predicate_hints,
+        -1, // limit_hint
+        -1, // version
+        query_hint
     );
     bind_data.files = query_result.files;
     bind_data.metadata = query_result.metadata;
@@ -369,9 +378,14 @@ static void DeltaShareListFilesFunction(
             DeltaSharingProfile profile = DeltaSharingProfile::FromConfig(context);
             DeltaSharingClient client(profile);
 
+            std::string query_hint = "";
+            if (profile.enable_query_hints) {
+                query_hint = context.GetCurrentQuery();
+            }
+
             // Query table to get files
             auto query_result = client.QueryTable(
-                share_name, schema_name, table_name, predicate_hints);
+                share_name, schema_name, table_name, predicate_hints, -1, -1, query_hint);
 
             // Set list entry metadata
             list_data[row_idx].offset = total_size;
@@ -417,6 +431,9 @@ static void LoadInternal(ExtensionLoader &loader) {
     config.AddExtensionOption("delta_sharing_bearer_token", "JWT Bearer token issued from server", 
         LogicalType::VARCHAR, 
         env_token? std::string(env_token) : "");
+    config.AddExtensionOption("delta_sharing_enable_query_hints", "Enable passing DuckDB query to Delta Sharing Server", 
+        LogicalType::BOOLEAN, 
+        Value::BOOLEAN(false));
 
     // Delta Sharing Functions
     TableFunction list("delta_share_list", {}, ListFunction, ListBind);
