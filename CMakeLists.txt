@@ -21,6 +21,7 @@ set(EXTENSION_SOURCES
     src/duck_delta_share_functions.cpp
     src/delta_sharing_client.cpp
     src/delta_sharing_json.cpp
+    src/url_cache_manager.cpp
 )
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})

@@ -166,8 +166,11 @@ static unique_ptr<GlobalTableFunctionState> ReadDeltaShareInit(
     // If predicate hints were pushed down during optimization, re-query with them
 
     DeltaSharingProfile profile = DeltaSharingProfile::FromConfig(context);
-    DeltaSharingClient client(profile);
-    auto query_result = client.QueryTable(
+    
+    // Create shared client for potential URL refresh
+    bind_data.client = std::make_shared<DeltaSharingClient>(profile);
+    
+    auto query_result = bind_data.client->QueryTable(
         bind_data.share_name,
         bind_data.schema_name,
         bind_data.table_name,
@@ -176,6 +179,49 @@ static unique_ptr<GlobalTableFunctionState> ReadDeltaShareInit(
     bind_data.files = query_result.files;
     bind_data.metadata = query_result.metadata;
     bind_data.current_idx = 0;
+    
+    // Create URL cache manager if refresh token is available and refresh is enabled
+    Value refresh_val;
+    bool enable_refresh = true;
+    if (context.TryGetCurrentSetting("delta_sharing_url_refresh_enabled", refresh_val)) {
+        enable_refresh = refresh_val.GetValue<bool>();
+    }
+    
+    if (!query_result.refresh_token.empty() && enable_refresh) {
+        Value threshold_val, interval_val;
+        int64_t threshold_minutes = 10;
+        int64_t check_interval_seconds = 60;
+        
+        if (context.TryGetCurrentSetting("delta_sharing_url_refresh_threshold_minutes", threshold_val)) {
+            threshold_minutes = threshold_val.GetValue<int64_t>();
+        }
+        if (context.TryGetCurrentSetting("delta_sharing_url_refresh_check_interval_seconds", interval_val)) {
+            check_interval_seconds = interval_val.GetValue<int64_t>();
+        }
+        
+        bind_data.url_cache = std::make_shared<UrlCacheManager>(
+            bind_data.client,
+            bind_data.share_name,
+            bind_data.schema_name,
+            bind_data.table_name,
+            query_result.refresh_token,
+            std::chrono::minutes(threshold_minutes),
+            std::chrono::seconds(check_interval_seconds)
+        );
+        
+        // Register all files in cache
+        for (const auto &file : bind_data.files) {
+            bind_data.url_cache->RegisterFile(
+                file.id,
+                file.url,
+                file.expiration_timestamp,
+                file.size
+            );
+        }
+        
+        // Start background refresh thread
+        bind_data.url_cache->StartRefreshThread();
+    }
 
     auto state = make_uniq<ReadDeltaShareGlobalState>();
 
@@ -266,6 +312,20 @@ static void ReadDeltaShareFunction(
         lstate.current_file_idx = file_idx;
 
         auto &file = bind_data.files[file_idx];
+        
+        // Get URL - use cache if available (will auto-refresh if needed)
+        std::string file_url;
+        if (bind_data.url_cache) {
+            try {
+                file_url = bind_data.url_cache->GetUrl(file.id);
+            } catch (const IOException &e) {
+                // URL expired and refresh failed - fall back to original URL
+                // This might fail, but at least we tried
+                file_url = file.url;
+            }
+        } else {
+            file_url = file.url;
+        }
 
         // Build column list for projection pushdown, excluding partition columns
         std::string select_columns;
@@ -290,7 +350,7 @@ static void ReadDeltaShareFunction(
             select_columns = "*";
         }
 
-        std::string query = "SELECT " + select_columns + " FROM read_parquet('" + file.url + "')";
+        std::string query = "SELECT " + select_columns + " FROM read_parquet('" + file_url + "')";
         if (!gstate.parquet_filters.empty()) {
             query += gstate.parquet_filters;
         }
@@ -417,6 +477,22 @@ static void LoadInternal(ExtensionLoader &loader) {
     config.AddExtensionOption("delta_sharing_bearer_token", "JWT Bearer token issued from server", 
         LogicalType::VARCHAR, 
         env_token? std::string(env_token) : "");
+    
+    // URL refresh configuration
+    config.AddExtensionOption("delta_sharing_url_refresh_enabled",
+        "Enable automatic URL refresh for long-running queries (default: true)",
+        LogicalType::BOOLEAN,
+        Value::BOOLEAN(true));
+    
+    config.AddExtensionOption("delta_sharing_url_refresh_threshold_minutes",
+        "Refresh URLs when they expire in less than this many minutes (default: 10)",
+        LogicalType::INTEGER,
+        Value::INTEGER(10));
+    
+    config.AddExtensionOption("delta_sharing_url_refresh_check_interval_seconds",
+        "How often to check if URLs need refreshing in seconds (default: 60)",
+        LogicalType::INTEGER,
+        Value::INTEGER(60));
 
     // Delta Sharing Functions
     TableFunction list("delta_share_list", {}, ListFunction, ListBind);

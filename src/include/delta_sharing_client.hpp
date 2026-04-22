@@ -113,6 +113,7 @@ public:
         Protocol protocol;
         TableMetadata metadata;
         std::vector<FileAction> files;
+        std::string refresh_token;  // Token to refresh URLs for same files
     };
     QueryTableResult QueryTable(
         const std::string &share_name,

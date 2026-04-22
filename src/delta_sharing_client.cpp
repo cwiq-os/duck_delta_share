@@ -433,10 +433,20 @@ DeltaSharingClient::QueryTableResult DeltaSharingClient::QueryTable(
         auto options = format_obj.value("options", json::object());
         result.metadata.format.options = JsonValue::FromInternal(&options);
 
-        // Remaining lines: files
+        // Remaining lines: files and endStreamAction
         for (size_t i = 2; i < lines.size(); i++) {
+            auto* line_json = static_cast<json*>(lines[i].GetInternalPtr());
+            
+            // Check for endStreamAction containing refresh token
+            if (line_json->contains("endStreamAction")) {
+                auto &end_action = line_json->at("endStreamAction");
+                if (end_action.contains("refreshToken")) {
+                    result.refresh_token = end_action["refreshToken"].get<std::string>();
+                }
+                continue;
+            }
+            
             if (lines[i].Contains("file")) {
-                auto* line_json = static_cast<json*>(lines[i].GetInternalPtr());
                 auto &file_obj = line_json->at("file");
                 FileAction file;
                 file.url = file_obj.at("url").get<std::string>();
