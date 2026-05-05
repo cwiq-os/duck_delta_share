@@ -66,7 +66,10 @@ struct FileAction {
     JsonValue stats; // Optional
     int64_t version; // Optional
     int64_t timestamp; // Optional
-    std::string expiration_timestamp; // Optional
+    // Unix timestamp in milliseconds at which the pre-signed URL expires.
+    // 0 means the server did not provide a value (the field is Optional in
+    // the Delta Sharing protocol). See PROTOCOL.md "expirationTimestamp".
+    int64_t expiration_timestamp = 0;
 };
 
 // HTTP Response structure

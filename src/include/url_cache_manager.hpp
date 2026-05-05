@@ -5,6 +5,7 @@
 #include <string>
 #include <unordered_map>
 #include <mutex>
+#include <condition_variable>
 #include <chrono>
 #include <thread>
 #include <atomic>
@@ -48,9 +49,13 @@ public:
     // Get URL for a file ID, refreshing if necessary
     std::string GetUrl(const std::string &file_id);
     
-    // Register a file with its initial URL and expiration
-    void RegisterFile(const std::string &file_id, const std::string &url, 
-                     const std::string &expiration_timestamp, int64_t size);
+    // Register a file with its initial URL and expiration.
+    // expiration_unix_millis is the unix timestamp in milliseconds at which the
+    // pre-signed URL expires (per the Delta Sharing protocol's
+    // `expirationTimestamp` field). Pass 0 if the server did not provide one,
+    // in which case a conservative default is used.
+    void RegisterFile(const std::string &file_id, const std::string &url,
+                     int64_t expiration_unix_millis, int64_t size);
     
     // Start background refresh thread
     void StartRefreshThread();
@@ -87,12 +92,22 @@ private:
     
     std::atomic<bool> refresh_thread_running_{false};
     std::unique_ptr<std::thread> refresh_thread_;
-    std::atomic<bool> refresh_in_progress_{false};
-    
+
+    // Coordinates concurrent refreshes: at most one thread does the work,
+    // others wait on refresh_cv_ until that thread signals completion.
+    std::mutex refresh_mutex_;
+    std::condition_variable refresh_cv_;
+    bool refresh_in_progress_{false};
+
     void RefreshThreadLoop();
     bool ShouldRefresh() const;
-    std::chrono::system_clock::time_point ParseExpirationTimestamp(const std::string &timestamp);
-    
+
+    // Convert a unix-millis timestamp to a system_clock::time_point.
+    // A value of 0 means "no expiration provided by server" and yields a
+    // conservative default (now + 1h).
+    static std::chrono::system_clock::time_point
+    ExpirationFromUnixMillis(int64_t expiration_unix_millis);
+
     // Get URL without automatic refresh (internal use)
     std::string GetUrlNoRefresh(const std::string &file_id);
 };

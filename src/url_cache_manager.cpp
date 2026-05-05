@@ -1,6 +1,4 @@
 #include "url_cache_manager.hpp"
-#include <iomanip>
-#include <sstream>
 
 namespace duckdb {
 
@@ -26,26 +24,15 @@ UrlCacheManager::~UrlCacheManager() {
 }
 
 void UrlCacheManager::RegisterFile(const std::string &file_id, const std::string &url,
-                                   const std::string &expiration_timestamp, int64_t size) {
+                                   int64_t expiration_unix_millis, int64_t size) {
     std::lock_guard<std::mutex> lock(cache_mutex_);
-    
+
     CachedFileUrl cached_url;
     cached_url.url = url;
     cached_url.file_id = file_id;
     cached_url.size = size;
-    
-    if (!expiration_timestamp.empty()) {
-        try {
-            cached_url.expiration = ParseExpirationTimestamp(expiration_timestamp);
-        } catch (...) {
-            // If parsing fails, default to 1 hour from now
-            cached_url.expiration = std::chrono::system_clock::now() + std::chrono::hours(1);
-        }
-    } else {
-        // Default to 1 hour if not provided
-        cached_url.expiration = std::chrono::system_clock::now() + std::chrono::hours(1);
-    }
-    
+    cached_url.expiration = ExpirationFromUnixMillis(expiration_unix_millis);
+
     url_cache_[file_id] = cached_url;
 }
 
@@ -83,56 +70,61 @@ std::string UrlCacheManager::GetUrl(const std::string &file_id) {
 }
 
 void UrlCacheManager::RefreshUrls() {
-    // Prevent concurrent refreshes
-    bool expected = false;
-    if (!refresh_in_progress_.compare_exchange_strong(expected, true)) {
-        // Another thread is already refreshing, wait for it to complete
-        while (refresh_in_progress_.load()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    // Coordinate concurrent refreshes via a condition variable so other
+    // threads sleep cheaply while one thread does the work, and are
+    // notified the moment it completes (or fails).
+    {
+        std::unique_lock<std::mutex> guard(refresh_mutex_);
+        if (refresh_in_progress_) {
+            // Another thread is already refreshing; wait for it to finish.
+            refresh_cv_.wait(guard, [this] { return !refresh_in_progress_; });
+            return;
         }
-        return;
+        refresh_in_progress_ = true;
     }
-    
-    try {
-        if (refresh_token_.empty()) {
-            refresh_in_progress_.store(false);
-            throw InvalidInputException("No refresh token available for URL refresh");
-        }
-        
-        // Make refresh request to server
-        // Note: The server should support using refreshToken in the request
-        // For now, we'll re-query the table which should return refreshed URLs
-        auto result = client_->QueryTable(share_name_, schema_name_, table_name_);
-        
-        std::lock_guard<std::mutex> lock(cache_mutex_);
-        
-        // Update URLs in cache
-        size_t updated_count = 0;
-        for (const auto &file : result.files) {
-            auto it = url_cache_.find(file.id);
-            if (it != url_cache_.end()) {
-                it->second.url = file.url;
-                if (!file.expiration_timestamp.empty()) {
-                    try {
-                        it->second.expiration = ParseExpirationTimestamp(file.expiration_timestamp);
-                    } catch (...) {
-                        it->second.expiration = std::chrono::system_clock::now() + std::chrono::hours(1);
-                    }
-                } else {
-                    it->second.expiration = std::chrono::system_clock::now() + std::chrono::hours(1);
-                }
-                updated_count++;
+
+    // RAII guard so we always clear the flag and wake waiters, even on throw.
+    struct ScopeGuard {
+        UrlCacheManager *self;
+        ~ScopeGuard() {
+            {
+                std::lock_guard<std::mutex> g(self->refresh_mutex_);
+                self->refresh_in_progress_ = false;
             }
+            self->refresh_cv_.notify_all();
         }
-        
-        // Note: In a production implementation, the server would return a new refresh token
-        // For now, we keep the same token
-        
-        refresh_in_progress_.store(false);
-        
+    } scope_guard{this};
+
+    if (refresh_token_.empty()) {
+        throw InvalidInputException("No refresh token available for URL refresh");
+    }
+
+    // TODO(url-refresh): Pass refresh_token_ in the QueryTable request body
+    // so the server can return URLs for the same set of files even if the
+    // table has been updated since the initial query. Today this is a plain
+    // re-query, which is functionally adequate but loses the version-pinning
+    // guarantee the protocol's refreshToken is meant to provide. See
+    // https://github.com/delta-io/delta-sharing/issues/383 for the analogous
+    // Spark behaviour.
+    DeltaSharingClient::QueryTableResult result;
+    try {
+        result = client_->QueryTable(share_name_, schema_name_, table_name_);
     } catch (const std::exception &e) {
-        refresh_in_progress_.store(false);
         throw IOException("Failed to refresh URLs: " + std::string(e.what()));
+    }
+
+    std::lock_guard<std::mutex> lock(cache_mutex_);
+
+    // Match refreshed entries to existing cache entries by file id. Files in
+    // the refresh response that aren't in the cache are ignored (we never
+    // expand the working set mid-query); files in the cache that aren't in
+    // the refresh response keep their existing URL (best-effort).
+    for (const auto &file : result.files) {
+        auto it = url_cache_.find(file.id);
+        if (it != url_cache_.end()) {
+            it->second.url = file.url;
+            it->second.expiration = ExpirationFromUnixMillis(file.expiration_timestamp);
+        }
     }
 }
 
@@ -193,34 +185,18 @@ void UrlCacheManager::RefreshThreadLoop() {
     }
 }
 
-std::chrono::system_clock::time_point 
-UrlCacheManager::ParseExpirationTimestamp(const std::string &timestamp) {
-    // Parse ISO 8601 timestamp: "2024-04-22T12:00:00Z" or "2024-04-22T12:00:00.000Z"
-    // or Unix timestamp in milliseconds as string
-    
-    // Try parsing as Unix timestamp (milliseconds) first
-    try {
-        int64_t millis = std::stoll(timestamp);
-        auto duration = std::chrono::milliseconds(millis);
-        return std::chrono::system_clock::time_point(duration);
-    } catch (...) {
-        // Not a numeric timestamp, try ISO 8601
+std::chrono::system_clock::time_point
+UrlCacheManager::ExpirationFromUnixMillis(int64_t expiration_unix_millis) {
+    // Per the Delta Sharing protocol, expirationTimestamp is a unix timestamp
+    // in milliseconds. The field is optional; the parser uses 0 as the
+    // sentinel for "not provided", in which case we fall back to a
+    // conservative default (1 hour from now), since the documented typical
+    // pre-signed URL TTL is around 1 hour.
+    if (expiration_unix_millis <= 0) {
+        return std::chrono::system_clock::now() + std::chrono::hours(1);
     }
-    
-    // Parse ISO 8601 format
-    std::tm tm = {};
-    std::istringstream ss(timestamp);
-    
-    // Try with milliseconds first: "2024-04-22T12:00:00.123Z"
-    ss >> std::get_time(&tm, "%Y-%m-%dT%H:%M:%S");
-    
-    if (ss.fail()) {
-        throw InvalidInputException("Failed to parse expiration timestamp: " + timestamp);
-    }
-    
-    // Convert to time_point (assuming UTC)
-    auto time = std::mktime(&tm);
-    return std::chrono::system_clock::from_time_t(time);
+    return std::chrono::system_clock::time_point(
+        std::chrono::milliseconds(expiration_unix_millis));
 }
 
 } // namespace duckdb

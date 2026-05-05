@@ -462,7 +462,10 @@ DeltaSharingClient::QueryTableResult DeltaSharingClient::QueryTable(
 
                 file.version = file_obj.value("version", 0);
                 file.timestamp = file_obj.value("timestamp", 0);
-                file.expiration_timestamp = file_obj.value("expirationTimestamp", "");
+                // expirationTimestamp is a unix-millis Long per the protocol;
+                // it's optional, so default to 0 ("not provided").
+                file.expiration_timestamp =
+                    file_obj.value("expirationTimestamp", static_cast<int64_t>(0));
                 result.files.push_back(file);
             }
         }

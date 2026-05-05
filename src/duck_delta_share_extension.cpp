@@ -312,7 +312,7 @@ static void ReadDeltaShareFunction(
         lstate.current_file_idx = file_idx;
 
         auto &file = bind_data.files[file_idx];
-        
+
         // Get URL - use cache if available (will auto-refresh if needed)
         std::string file_url;
         if (bind_data.url_cache) {
@@ -325,6 +325,23 @@ static void ReadDeltaShareFunction(
             }
         } else {
             file_url = file.url;
+        }
+
+        // Escape single quotes in the URL for safe inclusion in the SQL
+        // string literal below. Pre-signed URLs are produced by the sharing
+        // server and not by the user, but we still defend against a
+        // malformed or hostile URL containing a single quote rather than
+        // emitting broken SQL. The proper fix is to invoke read_parquet via
+        // a parameterised TableFunction call rather than string concat;
+        // tracked separately.
+        std::string escaped_url;
+        escaped_url.reserve(file_url.size());
+        for (char c : file_url) {
+            if (c == '\'') {
+                escaped_url.append("''");
+            } else {
+                escaped_url.push_back(c);
+            }
         }
 
         // Build column list for projection pushdown, excluding partition columns
@@ -350,7 +367,7 @@ static void ReadDeltaShareFunction(
             select_columns = "*";
         }
 
-        std::string query = "SELECT " + select_columns + " FROM read_parquet('" + file_url + "')";
+        std::string query = "SELECT " + select_columns + " FROM read_parquet('" + escaped_url + "')";
         if (!gstate.parquet_filters.empty()) {
             query += gstate.parquet_filters;
         }
