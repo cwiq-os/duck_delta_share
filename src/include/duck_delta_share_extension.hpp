@@ -2,7 +2,9 @@
 
 #include "duckdb.hpp"
 #include "delta_sharing_client.hpp"
+#include "url_cache_manager.hpp"
 #include <atomic>
+#include <memory>
 
 namespace duckdb {
 
@@ -24,6 +26,8 @@ struct ReadDeltaShareBindData : public TableFunctionData {
     idx_t current_idx = 0;
     std::unordered_set<std::string> partition_columns;
     std::vector<std::string> column_names;  // Store column names for projection mapping
+    std::shared_ptr<UrlCacheManager> url_cache;  // URL cache for refresh support
+    std::shared_ptr<DeltaSharingClient> client;  // Keep client alive for refresh
 };
 
 struct ReadDeltaShareLocalState : public LocalTableFunctionState {

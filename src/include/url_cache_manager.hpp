@@ -1,0 +1,115 @@
+#pragma once
+
+#include "duckdb.hpp"
+#include "delta_sharing_client.hpp"
+#include <string>
+#include <unordered_map>
+#include <mutex>
+#include <condition_variable>
+#include <chrono>
+#include <thread>
+#include <atomic>
+#include <memory>
+
+namespace duckdb {
+
+// Represents a cached file URL with expiration tracking
+struct CachedFileUrl {
+    std::string url;
+    std::string file_id;
+    std::chrono::system_clock::time_point expiration;
+    int64_t size;
+    
+    bool IsExpired(std::chrono::milliseconds threshold) const {
+        auto now = std::chrono::system_clock::now();
+        return (expiration - now) < threshold;
+    }
+    
+    bool IsExpiredNow() const {
+        auto now = std::chrono::system_clock::now();
+        return now >= expiration;
+    }
+};
+
+// Manages URL caching and refresh for a Delta Sharing table
+class UrlCacheManager {
+public:
+    UrlCacheManager(
+        std::shared_ptr<DeltaSharingClient> client,
+        std::string share_name,
+        std::string schema_name,
+        std::string table_name,
+        std::string refresh_token,
+        std::chrono::milliseconds refresh_threshold = std::chrono::minutes(10),
+        std::chrono::milliseconds check_interval = std::chrono::minutes(1)
+    );
+    
+    ~UrlCacheManager();
+    
+    // Get URL for a file ID, refreshing if necessary
+    std::string GetUrl(const std::string &file_id);
+    
+    // Register a file with its initial URL and expiration.
+    // expiration_unix_millis is the unix timestamp in milliseconds at which the
+    // pre-signed URL expires (per the Delta Sharing protocol's
+    // `expirationTimestamp` field). Pass 0 if the server did not provide one,
+    // in which case a conservative default is used.
+    void RegisterFile(const std::string &file_id, const std::string &url,
+                     int64_t expiration_unix_millis, int64_t size);
+    
+    // Start background refresh thread
+    void StartRefreshThread();
+    
+    // Stop background refresh thread
+    void StopRefreshThread();
+    
+    // Manually trigger refresh
+    void RefreshUrls();
+    
+    // Check if cache has a refresh token available
+    bool HasRefreshToken() const {
+        return !refresh_token_.empty();
+    }
+    
+    // Get cache size (for debugging/monitoring)
+    size_t GetCacheSize() const {
+        std::lock_guard<std::mutex> lock(cache_mutex_);
+        return url_cache_.size();
+    }
+
+private:
+    std::shared_ptr<DeltaSharingClient> client_;
+    std::string share_name_;
+    std::string schema_name_;
+    std::string table_name_;
+    std::string refresh_token_;
+    
+    std::unordered_map<std::string, CachedFileUrl> url_cache_;
+    mutable std::mutex cache_mutex_;
+    
+    std::chrono::milliseconds refresh_threshold_;
+    std::chrono::milliseconds check_interval_;
+    
+    std::atomic<bool> refresh_thread_running_{false};
+    std::unique_ptr<std::thread> refresh_thread_;
+
+    // Coordinates concurrent refreshes: at most one thread does the work,
+    // others wait on refresh_cv_ until that thread signals completion.
+    std::mutex refresh_mutex_;
+    std::condition_variable refresh_cv_;
+    bool refresh_in_progress_{false};
+
+    void RefreshThreadLoop();
+    bool ShouldRefresh() const;
+
+    // Convert a unix-millis timestamp to a system_clock::time_point.
+    // A value of 0 means "no expiration provided by server" and yields a
+    // conservative default (now + 1h).
+    static std::chrono::system_clock::time_point
+    ExpirationFromUnixMillis(int64_t expiration_unix_millis);
+
+    // Get URL without automatic refresh (internal use)
+    std::string GetUrlNoRefresh(const std::string &file_id);
+};
+
+} // namespace duckdb
