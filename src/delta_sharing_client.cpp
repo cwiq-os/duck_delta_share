@@ -379,9 +379,6 @@ DeltaSharingClient::QueryTableResult DeltaSharingClient::QueryTable(
     // Build POST request body
     json request_body;
     if (!predicate_hints.IsEmpty()) {
-        request_body["predicateHints"] = json::array();
-        request_body["predicateHints"].push_back("string");
-        request_body["version"] = 0;
         request_body["jsonPredicateHints"] = predicate_hints.Dump();
     }
     if (limit_hint > 0) {
